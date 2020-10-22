@@ -20,6 +20,7 @@ def gaussian_nll_loss(pred,
                       weight=None,
                       reduction='mean',
                       avg_factor=None,
+                      clamp=False,
                       lambda_g=1.0):
 
     reg_shape = [1] * len(pred.shape)
@@ -29,6 +30,8 @@ def gaussian_nll_loss(pred,
     diff = torch.pow(pred - target, 2)
     loss = (diff * torch.exp(-logvar) + regularize * logvar) / 2
 
+    if clamp: # prevent very large loss
+        loss = loss.clamp_max(1000.0)
     return weight_reduce_loss(loss, weight, reduction, avg_factor)
 
 def gaussian_von_mises_nll_loss(pred,
@@ -37,8 +40,8 @@ def gaussian_von_mises_nll_loss(pred,
                                 weight=None,
                                 reduction='mean',
                                 avg_factor=None,
+                                clamp=False,
                                 angular_index=6,
-                                alpha=1.0,
                                 lambda_g=1.0,
                                 lambda_v=1.0):
     # losses of ordinary linear dimensions
@@ -56,8 +59,10 @@ def gaussian_von_mises_nll_loss(pred,
                                  vonmise_var)
      # introduce gradient when logvar is large
     vonmise_loss = vonmise_nll + lambda_v * F.elu(vonmise_var)
-    loss = torch.cat([gauss_loss, alpha * vonmise_loss], dim=-1)
+    loss = torch.cat([gauss_loss, vonmise_loss], dim=-1)
 
+    if clamp: # prevent very large loss
+        loss = loss.clamp_max(1000.0)
     return weight_reduce_loss(loss, weight, reduction, avg_factor)
 
 @LOSSES.register_module()
@@ -73,10 +78,12 @@ class GaussianNLLLoss(nn.Module):
         loss_weight (float, optional): The weight of loss.
     """
     def __init__(self,
+                 clamp=False,
                  lambda_g=1.0,
                  reduction='mean',
                  loss_weight=1.0):
         super(GaussianNLLLoss, self).__init__()
+        self.clamp = clamp
         self.lambda_g = lambda_g
         self.reduction = reduction
         self.loss_weight = loss_weight
@@ -110,6 +117,7 @@ class GaussianNLLLoss(nn.Module):
             target,
             logvar,
             weight,
+            clamp=self.clamp,
             lambda_g=self.lambda_g,
             reduction=reduction,
             avg_factor=avg_factor)
@@ -122,7 +130,6 @@ class GaussianVonMisesNLLLoss(nn.Module):
     arXiv: TO BE ADDED
 
     Args:
-        alpha (float, optional): The weight of angular part
         lambda_g (float, optional): The regularization coefficient
             of the Guassian part
         lambda_v (float, optional): The regularization coefficient
@@ -133,13 +140,13 @@ class GaussianVonMisesNLLLoss(nn.Module):
     """
 
     def __init__(self,
-                 alpha=1.0,
+                 clamp=False,
                  lambda_g=1.0,
                  lambda_v=1.0,
                  reduction='mean',
                  loss_weight=1.0):
         super(GaussianVonMisesNLLLoss, self).__init__()
-        self.alpha = alpha
+        self.clamp = clamp
         self.lambda_g = lambda_g
         self.lambda_v = lambda_v
         self.reduction = reduction
@@ -174,8 +181,8 @@ class GaussianVonMisesNLLLoss(nn.Module):
             target,
             logvar,
             weight,
+            clamp=self.clamp,
             angular_index=6, # currently we fix angular term at 7th position
-            alpha=self.alpha,
             lambda_v=self.lambda_v,
             lambda_g=self.lambda_g,
             reduction=reduction,

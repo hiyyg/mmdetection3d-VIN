@@ -29,6 +29,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         assigner_per_size (bool): Whether to do assignment for each separate
             anchor size.
         assign_per_class (bool): Whether to do assignment for each class.
+        rad_weight (float): weight coefficient for angular part of bounding box
         diff_rad_by_sin (bool): Whether to change the difference into sin
             difference for box regression loss.
         dir_offset (float | int): The offset of BEV rotation angles.
@@ -60,6 +61,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                      reshape_out=False),
                  assigner_per_size=False,
                  assign_per_class=False,
+                 rad_weight=1,
                  diff_rad_by_sin=True,
                  dir_offset=0,
                  dir_limit_offset=1,
@@ -76,6 +78,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.feat_channels = feat_channels
+        self.rad_weight = rad_weight
         self.diff_rad_by_sin = diff_rad_by_sin
         self.use_var_regression = use_var_regression
         self.use_direction_classifier = use_direction_classifier
@@ -268,6 +271,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             if code_weight:
                 pos_bbox_weights = pos_bbox_weights * bbox_weights.new_tensor(
                     code_weight)
+            pos_bbox_weights[..., 6].mul_(self.rad_weight)
 
             # variance regression loss, need to be calculated before sin difference
             if self.use_var_regression:
@@ -423,6 +427,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         Args:
             cls_scores (list[torch.Tensor]): Multi-level class scores.
             bbox_preds (list[torch.Tensor]): Multi-level bbox predictions.
+            var_preds (list[torch.Tensor]): Multi-level variance predicetions.
             dir_cls_preds (list[torch.Tensor]): Multi-level direction
                 class predictions.
             input_metas (list[dict]): Contain pcd and img's meta info.
@@ -459,7 +464,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             ] if self.use_direction_classifier else [None] * num_levels
 
             input_meta = input_metas[img_id]
-            proposals = self.get_bboxes_single(cls_score_list, bbox_pred_list, var_preds,
+            proposals = self.get_bboxes_single(cls_score_list, bbox_pred_list, var_pred_list,
                                                dir_cls_pred_list, mlvl_anchors,
                                                input_meta, cfg, rescale)
             result_list.append(proposals)

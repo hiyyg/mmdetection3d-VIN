@@ -23,6 +23,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         train_cfg (dict): Train configs.
         test_cfg (dict): Test configs.
         feat_channels (int): Number of channels of the feature map.
+        use_var_regression (bool): Whether use variance regression branch.
         use_direction_classifier (bool): Whether to add a direction classifier.
         anchor_generator(dict): Config dict of anchor generator.
         assigner_per_size (bool): Whether to do assignment for each separate
@@ -37,6 +38,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         bbox_coder (dict): Config dict of box coders.
         loss_cls (dict): Config of classification loss.
         loss_bbox (dict): Config of localization loss.
+        loss_var (dict): Config of variance regression loss.
         loss_dir (dict): Config of direction classifier loss.
     """
 
@@ -47,6 +49,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                  test_cfg,
                  feat_channels=256,
                  use_direction_classifier=True,
+                 use_var_regression=False,
                  anchor_generator=dict(
                      type='Anchor3DRangeGenerator',
                      range=[0, -39.68, -1.78, 69.12, 39.68, -1.78],
@@ -67,12 +70,14 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                      loss_weight=1.0),
                  loss_bbox=dict(
                      type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=2.0),
+                 loss_var=dict(type='GaussianVonMisesNLLLoss', loss_weight=1),
                  loss_dir=dict(type='CrossEntropyLoss', loss_weight=0.2)):
         super().__init__()
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.feat_channels = feat_channels
         self.diff_rad_by_sin = diff_rad_by_sin
+        self.use_var_regression = use_var_regression
         self.use_direction_classifier = use_direction_classifier
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
@@ -98,6 +103,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
         self.loss_dir = build_loss(loss_dir)
+        self.loss_var = build_loss(loss_var)
         self.fp16_enabled = False
 
         self._init_layers()
@@ -125,6 +131,9 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         self.conv_cls = nn.Conv2d(self.feat_channels, self.cls_out_channels, 1)
         self.conv_reg = nn.Conv2d(self.feat_channels,
                                   self.num_anchors * self.box_code_size, 1)
+        if self.use_var_regression:
+            self.conv_var = nn.Conv2d(self.feat_channels,
+                                  self.num_anchors * self.box_code_size, 1)
         if self.use_direction_classifier:
             self.conv_dir_cls = nn.Conv2d(self.feat_channels,
                                           self.num_anchors * 2, 1)
@@ -134,6 +143,8 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         bias_cls = bias_init_with_prob(0.01)
         normal_init(self.conv_cls, std=0.01, bias=bias_cls)
         normal_init(self.conv_reg, std=0.01)
+        if self.use_var_regression:
+            normal_init(self.conv_var, std=0.01)
 
     def forward_single(self, x):
         """Forward function on a single-scale feature map.
@@ -147,10 +158,13 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         """
         cls_score = self.conv_cls(x)
         bbox_pred = self.conv_reg(x)
+        var_preds = None
         dir_cls_preds = None
+        if self.use_var_regression:
+            var_preds = self.conv_var(x)
         if self.use_direction_classifier:
             dir_cls_preds = self.conv_dir_cls(x)
-        return cls_score, bbox_pred, dir_cls_preds
+        return cls_score, bbox_pred, var_preds, dir_cls_preds
 
     def forward(self, feats):
         """Forward pass.
@@ -185,7 +199,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         anchor_list = [multi_level_anchors for _ in range(num_imgs)]
         return anchor_list
 
-    def loss_single(self, cls_score, bbox_pred, dir_cls_preds, labels,
+    def loss_single(self, cls_score, bbox_pred, var_pred, dir_cls_preds, labels,
                     label_weights, bbox_targets, bbox_weights, dir_targets,
                     dir_weights, num_total_samples):
         """Calculate loss of Single-level results.
@@ -193,6 +207,8 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         Args:
             cls_score (torch.Tensor): Class score in single-level.
             bbox_pred (torch.Tensor): Bbox prediction in single-level.
+            var_pred (torch.Tensor): Box parameter variance prediction
+                in single-level.
             dir_cls_preds (torch.Tensor): Predictions of direction class
                 in single-level.
             labels (torch.Tensor): Labels of class.
@@ -232,6 +248,12 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         pos_bbox_targets = bbox_targets[pos_inds]
         pos_bbox_weights = bbox_weights[pos_inds]
 
+        # var loss
+        if self.use_var_regression:
+            var_pred = var_pred.permute(0, 2, 3,
+                                        1).reshape(-1, self.box_code_size)
+            pos_var_pred = var_pred[pos_inds]
+
         # dir loss
         if self.use_direction_classifier:
             dir_cls_preds = dir_cls_preds.permute(0, 2, 3, 1).reshape(-1, 2)
@@ -246,6 +268,19 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             if code_weight:
                 pos_bbox_weights = pos_bbox_weights * bbox_weights.new_tensor(
                     code_weight)
+
+            # variance regression loss, need to be calculated before sin difference
+            if self.use_var_regression:
+                loss_var = self.loss_var(
+                    pos_bbox_pred,
+                    pos_bbox_targets,
+                    pos_var_pred,
+                    pos_bbox_weights,
+                    avg_factor=num_total_samples)
+            else:
+                loss_var = torch.tensor(0, dtype=pos_dir_cls_preds.dtype,
+                                        device=pos_dir_cls_preds.device)
+
             if self.diff_rad_by_sin:
                 pos_bbox_pred, pos_bbox_targets = self.add_sin_difference(
                     pos_bbox_pred, pos_bbox_targets)
@@ -256,19 +291,23 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                 avg_factor=num_total_samples)
 
             # direction classification loss
-            loss_dir = None
             if self.use_direction_classifier:
                 loss_dir = self.loss_dir(
                     pos_dir_cls_preds,
                     pos_dir_targets,
                     pos_dir_weights,
                     avg_factor=num_total_samples)
+            else:
+                loss_dir = torch.tensor(0, dtype=pos_dir_cls_preds.dtype,
+                                        device=pos_dir_cls_preds.device)
         else:
             loss_bbox = pos_bbox_pred.sum()
+            if self.use_var_regression:
+                loss_var = pos_var_pred.sum()
             if self.use_direction_classifier:
                 loss_dir = pos_dir_cls_preds.sum()
 
-        return loss_cls, loss_bbox, loss_dir
+        return loss_cls, loss_bbox, loss_var, loss_dir
 
     @staticmethod
     def add_sin_difference(boxes1, boxes2):
@@ -294,10 +333,11 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                            dim=-1)
         return boxes1, boxes2
 
-    @force_fp32(apply_to=('cls_scores', 'bbox_preds', 'dir_cls_preds'))
+    @force_fp32(apply_to=('cls_scores', 'bbox_preds', 'var_preds', 'dir_cls_preds'))
     def loss(self,
              cls_scores,
              bbox_preds,
+             var_preds,
              dir_cls_preds,
              gt_bboxes,
              gt_labels,
@@ -351,10 +391,11 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             num_total_pos + num_total_neg if self.sampling else num_total_pos)
 
         # num_total_samples = None
-        losses_cls, losses_bbox, losses_dir = multi_apply(
+        losses_cls, losses_bbox, losses_var, losses_dir = multi_apply(
             self.loss_single,
             cls_scores,
             bbox_preds,
+            var_preds,
             dir_cls_preds,
             labels_list,
             label_weights_list,
@@ -364,11 +405,15 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             dir_weights_list,
             num_total_samples=num_total_samples)
         return dict(
-            loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dir=losses_dir)
+            loss_cls=losses_cls,
+            loss_bbox=losses_bbox,
+            loss_var=losses_var,
+            loss_dir=losses_dir)
 
     def get_bboxes(self,
                    cls_scores,
                    bbox_preds,
+                   var_preds,
                    dir_cls_preds,
                    input_metas,
                    cfg=None,
@@ -406,12 +451,15 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             bbox_pred_list = [
                 bbox_preds[i][img_id].detach() for i in range(num_levels)
             ]
+            var_pred_list = [
+                var_preds[i][img_id].detach() for i in range(num_levels)
+            ] if self.use_var_regression else [None] * num_levels
             dir_cls_pred_list = [
                 dir_cls_preds[i][img_id].detach() for i in range(num_levels)
-            ]
+            ] if self.use_direction_classifier else [None] * num_levels
 
             input_meta = input_metas[img_id]
-            proposals = self.get_bboxes_single(cls_score_list, bbox_pred_list,
+            proposals = self.get_bboxes_single(cls_score_list, bbox_pred_list, var_preds,
                                                dir_cls_pred_list, mlvl_anchors,
                                                input_meta, cfg, rescale)
             result_list.append(proposals)
@@ -420,6 +468,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
     def get_bboxes_single(self,
                           cls_scores,
                           bbox_preds,
+                          var_preds,
                           dir_cls_preds,
                           mlvl_anchors,
                           input_meta,
@@ -430,6 +479,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         Args:
             cls_scores (torch.Tensor): Class score in single batch.
             bbox_preds (torch.Tensor): Bbox prediction in single batch.
+            var_preds (torch.Tensor): Variance prediction in single batch.
             dir_cls_preds (torch.Tensor): Predictions of direction class
                 in single batch.
             mlvl_anchors (List[torch.Tensor]): Multi-level anchors
@@ -446,26 +496,37 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                 - labels (torch.Tensor): Label of each bbox.
         """
         cfg = self.test_cfg if cfg is None else cfg
-        assert len(cls_scores) == len(bbox_preds) == len(mlvl_anchors)
+        assert len(cls_scores) == len(bbox_preds) == len(var_preds) \
+            == len(dir_cls_preds) == len(mlvl_anchors)
+
         mlvl_bboxes = []
         mlvl_scores = []
         mlvl_dir_scores = []
-        for cls_score, bbox_pred, dir_cls_pred, anchors in zip(
-                cls_scores, bbox_preds, dir_cls_preds, mlvl_anchors):
+        for cls_score, bbox_pred, var_pred, dir_cls_pred, anchors in zip(
+                cls_scores, bbox_preds, var_preds, dir_cls_preds, mlvl_anchors):
             assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
-            assert cls_score.size()[-2:] == dir_cls_pred.size()[-2:]
-            dir_cls_pred = dir_cls_pred.permute(1, 2, 0).reshape(-1, 2)
-            dir_cls_score = torch.max(dir_cls_pred, dim=-1)[1]
+            assert not self.use_var_regression or \
+                   cls_score.size()[-2:] == var_pred.size()[-2:]
+            assert not self.use_direction_classifier or \
+                   cls_score.size()[-2:] == dir_cls_pred.size()[-2:]
 
-            cls_score = cls_score.permute(1, 2,
-                                          0).reshape(-1, self.num_classes)
+            # reshape boxes
+            cls_score = cls_score.permute(1, 2, 0) \
+                                 .reshape(-1, self.num_classes)
             if self.use_sigmoid_cls:
                 scores = cls_score.sigmoid()
             else:
                 scores = cls_score.softmax(-1)
-            bbox_pred = bbox_pred.permute(1, 2,
-                                          0).reshape(-1, self.box_code_size)
+            bbox_pred = bbox_pred.permute(1, 2, 0) \
+                                 .reshape(-1, self.box_code_size)
+            if self.use_var_regression:
+                var_pred = var_pred.permute(1, 2, 0) \
+                                   .reshape(-1, self.box_code_size)
+            if self.use_direction_classifier:
+                dir_cls_pred = dir_cls_pred.permute(1, 2, 0).reshape(-1, 2)
+                dir_cls_score = torch.max(dir_cls_pred, dim=-1)[1]
 
+            # perform nms
             nms_pre = cfg.get('nms_pre', -1)
             if nms_pre > 0 and scores.shape[0] > nms_pre:
                 if self.use_sigmoid_cls:

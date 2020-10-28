@@ -73,7 +73,12 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                  loss_bbox=dict(
                      type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=2.0),
                  loss_var=dict(type='GaussianVonMisesNLLLoss', loss_weight=1),
-                 loss_dir=dict(type='CrossEntropyLoss', loss_weight=0.2)):
+                 loss_dir=dict(type='CrossEntropyLoss', loss_weight=0.2),
+                 nms_var_cfg=dict(
+                     mapping="none", # none / linear / sigmoid / exp
+                     aggregate="sum", # sum / max
+                     mapping_k=1,
+                     mapping_b=0)):
         super().__init__()
         self.in_channels = in_channels
         self.num_classes = num_classes
@@ -84,6 +89,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         self.use_direction_classifier = use_direction_classifier
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
+        self.nms_var_cfg = nms_var_cfg
         self.assigner_per_size = assigner_per_size
         self.assign_per_class = assign_per_class
         self.dir_offset = dir_offset
@@ -140,6 +146,37 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         if self.use_direction_classifier:
             self.conv_dir_cls = nn.Conv2d(self.feat_channels,
                                           self.num_anchors * 2, 1)
+
+    def _map_var_to_score(self, var):
+        """
+        Mapping variance to score. 
+
+        Args:
+            var (torch.Tensor): Predicted variance map
+
+        Returns:
+            torch.Tensor: score from variance
+        """
+        aggregate, mapping = self.nms_var_cfg["aggregate"].lower(), self.nms_var_cfg["map"].lower()
+        k, b = abs(self.nms_var_cfg["mapping_k"]), self.nms_var_cfg["mapping_b"]
+
+        if aggregate == "max":
+            var = var.max(dim=-1).values
+        elif aggregate == "sum":
+            var = torch.logsumexp(var)
+        else:
+            raise ValueError("Unexpected variance aggregation method.")
+
+        if mapping == "linear":
+            var = torch.clamp_max(-k*var + b)
+        elif mapping == "sigmoid":
+            var = F.logsigmoid(-k*var + b)
+        elif mapping == "exp":
+            var = -torch.exp(k*var + b)
+        else:
+            raise ValueError("Unexpected variance mapping method.")
+
+        return var.exp()
 
     def init_weights(self):
         """Initialize the weights of head."""
@@ -266,6 +303,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
             pos_dir_targets = dir_targets[pos_inds]
             pos_dir_weights = dir_weights[pos_inds]
 
+        zero = torch.tensor(0, dtype=bbox_pred.dtype, device=bbox_pred.device)
         if num_pos > 0:
             code_weight = self.train_cfg.get('code_weight', None)
             if code_weight:
@@ -306,10 +344,8 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                                         device=pos_dir_cls_preds.device)
         else:
             loss_bbox = pos_bbox_pred.sum()
-            if self.use_var_regression:
-                loss_var = pos_var_pred.sum()
-            if self.use_direction_classifier:
-                loss_dir = pos_dir_cls_preds.sum()
+            loss_var = pos_var_pred.sum() if self.use_var_regression else zero
+            loss_dir = pos_dir_cls_preds.sum() if self.use_direction_classifier else zero
 
         return loss_cls, loss_bbox, loss_var, loss_dir
 
@@ -507,6 +543,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         mlvl_bboxes = []
         mlvl_scores = []
         mlvl_dir_scores = []
+        mlvl_vars = []
         for cls_score, bbox_pred, var_pred, dir_cls_pred, anchors in zip(
                 cls_scores, bbox_preds, var_preds, dir_cls_preds, mlvl_anchors):
             assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
@@ -531,7 +568,10 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                 dir_cls_pred = dir_cls_pred.permute(1, 2, 0).reshape(-1, 2)
                 dir_cls_score = torch.max(dir_cls_pred, dim=-1)[1]
 
-            # perform nms
+            # prepare nms
+            if self.nms_var_cfg["mapping"].lower() != "none":
+                scores = scores * self._map_var_to_score(var_pred)
+
             nms_pre = cfg.get('nms_pre', -1)
             if nms_pre > 0 and scores.shape[0] > nms_pre:
                 if self.use_sigmoid_cls:
@@ -543,17 +583,20 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                 bbox_pred = bbox_pred[topk_inds, :]
                 scores = scores[topk_inds, :]
                 dir_cls_score = dir_cls_score[topk_inds]
+                var_pred = var_pred[topk_inds, :]
 
             bboxes = self.bbox_coder.decode(anchors, bbox_pred)
             mlvl_bboxes.append(bboxes)
             mlvl_scores.append(scores)
             mlvl_dir_scores.append(dir_cls_score)
+            mlvl_vars.append(var_pred.exp()) # convert log(sigma^2) to sigma^2
 
         mlvl_bboxes = torch.cat(mlvl_bboxes)
         mlvl_bboxes_for_nms = xywhr2xyxyr(input_meta['box_type_3d'](
             mlvl_bboxes, box_dim=self.box_code_size).bev)
         mlvl_scores = torch.cat(mlvl_scores)
         mlvl_dir_scores = torch.cat(mlvl_dir_scores)
+        mlvl_vars = torch.cat(mlvl_vars)
 
         if self.use_sigmoid_cls:
             # Add a dummy background class to the front when using sigmoid
@@ -563,8 +606,8 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         score_thr = cfg.get('score_thr', 0)
         results = box3d_multiclass_nms(mlvl_bboxes, mlvl_bboxes_for_nms,
                                        mlvl_scores, score_thr, cfg.max_num,
-                                       cfg, mlvl_dir_scores)
-        bboxes, scores, labels, dir_scores = results
+                                       cfg, mlvl_dir_scores, mlvl_vars)
+        bboxes, scores, labels, dir_scores, variances = results
         if bboxes.shape[0] > 0:
             dir_rot = limit_period(bboxes[..., 6] - self.dir_offset,
                                    self.dir_limit_offset, np.pi)
@@ -572,4 +615,4 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                 dir_rot + self.dir_offset +
                 np.pi * dir_scores.to(bboxes.dtype))
         bboxes = input_meta['box_type_3d'](bboxes, box_dim=self.box_code_size)
-        return bboxes, scores, labels
+        return bboxes, scores, labels, variances

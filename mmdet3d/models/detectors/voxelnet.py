@@ -100,8 +100,7 @@ class VoxelNet(SingleStage3DDetector):
         bbox_list = self.bbox_head.get_bboxes(
             *outs, img_metas, rescale=rescale)
         bbox_results = [
-            bbox3d2result(bboxes, scores, labels)
-            for bboxes, scores, labels in bbox_list
+            bbox3d2result(*results) for results in bbox_list
         ]
         return bbox_results
 

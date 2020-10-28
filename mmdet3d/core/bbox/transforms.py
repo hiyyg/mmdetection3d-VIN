@@ -46,22 +46,27 @@ def bbox3d2roi(bbox_list):
     return rois
 
 
-def bbox3d2result(bboxes, scores, labels):
+def bbox3d2result(bboxes, scores, labels, variances=None):
     """Convert detection results to a list of numpy arrays.
 
     Args:
-        bboxes (torch.Tensor): Bounding boxes with shape of (n, 5).
+        bboxes (torch.Tensor): Bounding boxes with shape of (n, 7).
         labels (torch.Tensor): Labels with shape of (n, ).
         scores (torch.Tensor): Scores with shape of (n, ).
+        vars (torch.Tensor): Variances with shape of (n, 7).
 
     Returns:
         dict[str, torch.Tensor]: Bounding box results in cpu mode.
 
             - boxes_3d (torch.Tensor): 3D boxes.
-            - scores (torch.Tensor): Prediction scores.
+            - scores_3d (torch.Tensor): Prediction scores.
             - labels_3d (torch.Tensor): Box labels.
+            - vars_3d (torch.Tensor): Predicted variances.
     """
-    return dict(
+    result = dict(
         boxes_3d=bboxes.to('cpu'),
         scores_3d=scores.cpu(),
         labels_3d=labels.cpu())
+    if variances is not None:
+        result['vars_3d'] = variances
+    return result

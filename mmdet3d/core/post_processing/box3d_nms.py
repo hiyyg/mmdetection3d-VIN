@@ -11,7 +11,8 @@ def box3d_multiclass_nms(mlvl_bboxes,
                          score_thr,
                          max_num,
                          cfg,
-                         mlvl_dir_scores=None):
+                         mlvl_dir_scores=None,
+                         mlvl_vars=None):
     """Multi-class nms for 3D boxes.
 
     Args:
@@ -27,6 +28,7 @@ def box3d_multiclass_nms(mlvl_bboxes,
         cfg (dict): Configuration dict of NMS.
         mlvl_dir_scores (torch.Tensor, optional): Multi-level scores
             of direction classifier. Defaults to None.
+        mlvl_vars (torch.Tensor, optional): Multi-level variance predictions
 
     Returns:
         tuple[torch.Tensor]: Return results after nms, including 3D \
@@ -39,6 +41,7 @@ def box3d_multiclass_nms(mlvl_bboxes,
     scores = []
     labels = []
     dir_scores = []
+    variances = []
     for i in range(0, num_classes):
         # get bboxes and scores of this class
         cls_inds = mlvl_scores[:, i] > score_thr
@@ -65,6 +68,9 @@ def box3d_multiclass_nms(mlvl_bboxes,
         if mlvl_dir_scores is not None:
             _mlvl_dir_scores = mlvl_dir_scores[cls_inds]
             dir_scores.append(_mlvl_dir_scores[selected])
+        if mlvl_vars is not None:
+            _mlvl_vars = mlvl_vars[cls_inds]
+            variances.append(_mlvl_vars[selected])
 
     if bboxes:
         bboxes = torch.cat(bboxes, dim=0)
@@ -72,6 +78,9 @@ def box3d_multiclass_nms(mlvl_bboxes,
         labels = torch.cat(labels, dim=0)
         if mlvl_dir_scores is not None:
             dir_scores = torch.cat(dir_scores, dim=0)
+        if mlvl_vars is not None:
+            variances = torch.cat(variances, dim=0)
+
         if bboxes.shape[0] > max_num:
             _, inds = scores.sort(descending=True)
             inds = inds[:max_num]
@@ -80,12 +89,20 @@ def box3d_multiclass_nms(mlvl_bboxes,
             scores = scores[inds]
             if mlvl_dir_scores is not None:
                 dir_scores = dir_scores[inds]
+            if mlvl_vars is not None:
+                variances = variances[inds, :]
     else:
         bboxes = mlvl_scores.new_zeros((0, mlvl_bboxes.size(-1)))
         scores = mlvl_scores.new_zeros((0, ))
         labels = mlvl_scores.new_zeros((0, ), dtype=torch.long)
         dir_scores = mlvl_scores.new_zeros((0, ))
-    return bboxes, scores, labels, dir_scores
+        variances = mlvl_scores.new_zeros((0, mlvl_bboxes.size(-1)))
+
+    if mlvl_dir_scores is None:
+        dir_scores = None
+    if mlvl_vars is None:
+        variances = None
+    return bboxes, scores, labels, dir_scores, variances
 
 
 def aligned_3d_nms(boxes, scores, classes, thresh):

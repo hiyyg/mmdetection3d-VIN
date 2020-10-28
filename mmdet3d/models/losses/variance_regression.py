@@ -32,6 +32,11 @@ def gaussian_nll_loss(pred,
 
     if clamp: # prevent very large loss
         loss = loss.clamp_max(1000.0)
+
+    if torch.any(torch.isnan(loss)):
+        print("DUMP: max var =", logvar.abs().max())
+        print("DUMP: num of nans =", torch.sum(torch.isnan(loss)))
+        raise ValueError("Detected nan in var loss")
     return weight_reduce_loss(loss, weight, reduction, avg_factor)
 
 def gaussian_von_mises_nll_loss(pred,
@@ -63,6 +68,11 @@ def gaussian_von_mises_nll_loss(pred,
 
     if clamp: # prevent very large loss
         loss = loss.clamp_max(1000.0)
+
+    if torch.any(torch.isnan(loss)):
+        print("DUMP: max var =", logvar.abs().max())
+        print("DUMP: num of nans =", torch.sum(torch.isnan(loss)))
+        raise ValueError("Detected nan in var loss")
     return weight_reduce_loss(loss, weight, reduction, avg_factor)
 
 @LOSSES.register_module()

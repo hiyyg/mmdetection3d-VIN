@@ -54,7 +54,7 @@ class DeltaXYZWLHRBBoxCoder(BaseBBoxCoder):
         return torch.cat([xt, yt, zt, wt, lt, ht, rt, *cts], dim=-1)
 
     @staticmethod
-    def decode(anchors, deltas):
+    def decode(anchors, deltas, variances=None):
         """Apply transformation `deltas` (dx, dy, dz, dw, dh, dl, dr, dv*) to
         `boxes`.
 
@@ -62,6 +62,7 @@ class DeltaXYZWLHRBBoxCoder(BaseBBoxCoder):
             anchors (torch.Tensor): Parameters of anchors with shape (N, 7).
             deltas (torch.Tensor): Encoded boxes with shape
                 (N, 7+n) [x, y, z, w, l, h, r, velo*].
+            variances (torch.Tensor): Encoded
 
         Returns:
             torch.Tensor: Decoded boxes.
@@ -87,4 +88,19 @@ class DeltaXYZWLHRBBoxCoder(BaseBBoxCoder):
         rg = rt + ra
         zg = zg - hg / 2
         cgs = [t + a for t, a in zip(cts, cas)]
-        return torch.cat([xg, yg, zg, wg, lg, hg, rg, *cgs], dim=-1)
+
+        targets = torch.cat([xg, yg, zg, wg, lg, hg, rg, *cgs], dim=-1)
+        if variances is None:
+            return targets
+
+        # convert log(sigma^2) to sigma^2 first
+        vx, vy, vz, vw, vl, vh, vr = torch.split(variances.exp(), 1, dim=-1)
+        vx *= diagonal.pow(2)
+        vy *= diagonal.pow(2)
+        vz *= ha.pow(2)
+        vw *= wg.pow(2)
+        vl *= lg.pow(2)
+        vh *= hg.pow(2)
+        
+        dvars = torch.cat([vx, vy, vz, vw, vl, vh, vr], dim=-1)
+        return targets, dvars

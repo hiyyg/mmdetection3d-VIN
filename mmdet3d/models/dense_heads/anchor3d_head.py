@@ -543,7 +543,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         mlvl_bboxes = []
         mlvl_scores = []
         mlvl_dir_scores = []
-        mlvl_vars = []
+        mlvl_vars = [] if self.use_var_regression else None
         for cls_score, bbox_pred, var_pred, dir_cls_pred, anchors in zip(
                 cls_scores, bbox_preds, var_preds, dir_cls_preds, mlvl_anchors):
             assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
@@ -582,21 +582,30 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
                 anchors = anchors[topk_inds, :]
                 bbox_pred = bbox_pred[topk_inds, :]
                 scores = scores[topk_inds, :]
-                dir_cls_score = dir_cls_score[topk_inds]
-                var_pred = var_pred[topk_inds, :]
+                if self.use_direction_classifier:
+                    dir_cls_score = dir_cls_score[topk_inds]
+                if self.use_var_regression:
+                    var_pred = var_pred[topk_inds, :]
 
-            bboxes = self.bbox_coder.decode(anchors, bbox_pred)
+            if self.use_var_regression:
+                bboxes, var_pred = self.bbox_coder.decode(anchors, bbox_pred, var_pred)
+            else:
+                bboxes = self.bbox_coder.decode(anchors, bbox_pred)
             mlvl_bboxes.append(bboxes)
             mlvl_scores.append(scores)
-            mlvl_dir_scores.append(dir_cls_score)
-            mlvl_vars.append(var_pred.exp()) # convert log(sigma^2) to sigma^2
+            if self.use_direction_classifier:
+                mlvl_dir_scores.append(dir_cls_score)
+            if self.use_var_regression:
+                mlvl_vars.append(var_pred)
 
         mlvl_bboxes = torch.cat(mlvl_bboxes)
         mlvl_bboxes_for_nms = xywhr2xyxyr(input_meta['box_type_3d'](
             mlvl_bboxes, box_dim=self.box_code_size).bev)
         mlvl_scores = torch.cat(mlvl_scores)
-        mlvl_dir_scores = torch.cat(mlvl_dir_scores)
-        mlvl_vars = torch.cat(mlvl_vars)
+        if self.use_direction_classifier:
+            mlvl_dir_scores = torch.cat(mlvl_dir_scores)
+        if self.use_var_regression:
+            mlvl_vars = torch.cat(mlvl_vars)
 
         if self.use_sigmoid_cls:
             # Add a dummy background class to the front when using sigmoid

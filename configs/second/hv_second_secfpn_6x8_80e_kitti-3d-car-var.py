@@ -17,7 +17,7 @@ model = dict(
             reshape_out=True),
         use_var_regression=True,
         loss_var=dict(
-            type='GaussianVonMisesNLLLoss', loss_weight=1)))
+            type='GaussianVonMisesNLLLoss', loss_weight=1, clamp=True)))
 # model training and testing settings
 train_cfg = dict(
     _delete_=True,
@@ -31,3 +31,7 @@ train_cfg = dict(
     allowed_border=0,
     pos_weight=-1,
     debug=False)
+
+data = dict(
+    samples_per_gpu=5,
+)

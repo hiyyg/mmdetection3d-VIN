@@ -7,8 +7,18 @@
 [![codecov](https://codecov.io/gh/open-mmlab/mmdetection3d/branch/master/graph/badge.svg)](https://codecov.io/gh/open-mmlab/mmdetection3d)
 [![license](https://img.shields.io/github/license/open-mmlab/mmdetection3d.svg)](https://github.com/open-mmlab/mmdetection3d/blob/master/LICENSE)
 
+# Reference
 
-**News**: We released the codebase v0.6.1.
+This fork contains the implementation of paper *Uncertainty-Aware Voxel based 3D Object Detection and Tracking with von-Mises Loss*
+
+```bibtex
+@article{zhong2020uncertainty,
+  title={Uncertainty-Aware Voxel based 3D Object Detection and Tracking with von-Mises Loss},
+  author={Zhong, Yuanxin and Zhu, Minghan and Peng, Huei},
+  journal={arXiv preprint arXiv:2011.02553},
+  year={2020}
+}
+```
 
 Documentation: https://mmdetection3d.readthedocs.io/
 

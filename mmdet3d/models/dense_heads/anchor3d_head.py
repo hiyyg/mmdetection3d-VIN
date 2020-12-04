@@ -3,6 +3,7 @@ import torch
 from mmcv.cnn import bias_init_with_prob, normal_init
 from mmcv.runner import force_fp32
 from torch import nn as nn
+from torch.nn import functional as F
 
 from mmdet3d.core import (PseudoSampler, box3d_multiclass_nms, limit_period,
                           xywhr2xyxyr)
@@ -157,18 +158,18 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         Returns:
             torch.Tensor: score from variance
         """
-        aggregate, mapping = self.nms_var_cfg["aggregate"].lower(), self.nms_var_cfg["map"].lower()
+        aggregate, mapping = self.nms_var_cfg["aggregate"].lower(), self.nms_var_cfg["mapping"].lower()
         k, b = abs(self.nms_var_cfg["mapping_k"]), self.nms_var_cfg["mapping_b"]
 
         if aggregate == "max":
             var = var.max(dim=-1).values
         elif aggregate == "sum":
-            var = torch.logsumexp(var)
+            var = torch.logsumexp(var, dim=-1)
         else:
             raise ValueError("Unexpected variance aggregation method.")
 
         if mapping == "linear":
-            var = torch.clamp_max(-k*var + b)
+            var = torch.clamp_max(-k*var + b, 0)
         elif mapping == "sigmoid":
             var = F.logsigmoid(-k*var + b)
         elif mapping == "exp":
@@ -176,7 +177,7 @@ class Anchor3DHead(nn.Module, AnchorTrainMixin):
         else:
             raise ValueError("Unexpected variance mapping method.")
 
-        return var.exp()
+        return var.exp().unsqueeze(dim=-1)
 
     def init_weights(self):
         """Initialize the weights of head."""

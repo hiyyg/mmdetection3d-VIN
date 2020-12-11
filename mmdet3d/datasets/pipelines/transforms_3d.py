@@ -4,6 +4,7 @@ from mmcv.utils import build_from_cfg
 
 from mmdet3d.core import VoxelGenerator
 from mmdet3d.core.bbox import box_np_ops
+from mmdet3d.utils.plane_ransac import plane_ransac, plane_ransac_batch
 from mmdet.datasets.builder import PIPELINES
 from mmdet.datasets.pipelines import RandomFlip
 from ..registry import OBJECTSAMPLERS
@@ -844,3 +845,93 @@ class VoxelBasedPointSampler(object):
         repr_str += ' ' * indent + 'prev_voxel_generator=\n'
         repr_str += f'{_auto_indent(repr(self.prev_voxel_generator), 8)})'
         return repr_str
+
+@PIPELINES.register_module()
+class BeamAngleSampler(object):
+    """Reduce beams of a lidar point cloud. The beam is assume distributed
+    evenly across the elevation angle range
+
+    Args:
+        original_beams (int): Original number of beams
+        target_beams_range (tuple): Min_beams, Max_beams. Determine the
+            range of target beams 
+    """
+    def __init__(self, original_beams=64, target_beams_range=[28, 36]):
+        self.original_beams = original_beams
+        self.target_beams_range = target_beams_range
+        
+    def __call__(self, input_dict):
+        """Call function to reduce beams by angle
+
+        Args:
+            input_dict (dict): Result dict from loading pipeline.
+
+        Returns:
+            dict: Results after filtering, 'points' keys are updated \
+                in the result dict.
+        """
+        cloud = input_dict['points']
+
+        r = np.hypot(cloud[:,0], cloud[:,1])
+        a = np.arctan2(cloud[:,2], r)
+        amin, amax = np.min(a), np.max(a)
+        b = ((a - amin) * self.original_beams / (amax - amin)).astype(int)
+
+        b_target = np.random.randint(self.target_beams_range[0],
+                                     self.target_beams_range[1] + 1)
+        b_choice = np.random.choice(self.original_beams, b_target,
+                                    replace=False)
+        input_dict['points'] = cloud[sum((b == i for i in b_choice), False)]
+        return input_dict
+
+    def __repr__(self):
+        return self.__class__.__name__
+
+@PIPELINES.register_module()
+class RansacGroundRemoval(object):
+    """Remove ground points using RANSAC algorithm
+
+    Args:
+        max_iter (int): Maximum iterations for RANSAC
+        max_err (float): Maximum error for points to be counted as inlier
+            for RANSAC.
+        p (float): The possibility for picking a ground point in the whole
+            point cloud. Higher the probability, more iterations will possibly
+            be executed.
+        batch_count (int): Number of batches for mini-batch based RANSAC.
+            If set to zero, the whole point cloud is used in RANSAC.
+        batch_size (int): Number of points in the mini-batch point cloud.
+            Only applicable when batch_count > 0.
+    """
+    def __init__(self,
+                 max_iter=1000, max_err=0.1, p=0.8,
+                 batch_count=0, batch_size=10000):
+        self.max_iter = max_iter
+        self.max_err = max_err
+        self.p = p
+        self.batch_count = batch_count
+        self.batch_size = batch_size
+
+    def __call__(self, input_dict):
+        """Call function to remove ground.
+
+        Args:
+            input_dict (dict): Result dict from loading pipeline.
+
+        Returns:
+            dict: Results after filtering, 'points' keys are updated \
+                in the result dict.
+        """
+        cloud = input_dict['points']
+        if self.batch_count == 0:
+            inliers, _ = plane_ransac(cloud, self.max_iter,
+                                      self.max_err, self.p)
+        else:
+            inliers = plane_ransac_batch(cloud, self.max_iter,
+                                         self.max_err, self.p,
+                                         self.batch_size, self.batch_count)
+        input_dict['points'] = cloud[~inliers]
+        return input_dict
+
+    def __repr__(self):
+        return self.__class__.__name__

@@ -1,9 +1,10 @@
-from setuptools import find_packages, setup
+from setuptools import find_packages, setup, Extension
 
 import os
 import torch
 from torch.utils.cpp_extension import (BuildExtension, CppExtension,
-                                       CUDAExtension)
+                                       CUDAExtension)     
+from Cython.Build import cythonize
 
 
 def readme():
@@ -134,7 +135,6 @@ def parse_requirements(fname='requirements.txt', with_version=True):
     packages = list(gen_packages_items())
     return packages
 
-
 if __name__ == '__main__':
     setup(
         name='mmdet3d',
@@ -243,6 +243,8 @@ if __name__ == '__main__':
                 module='mmdet3d.ops.gather_points',
                 sources=['src/gather_points.cpp'],
                 sources_cuda=['src/gather_points_cuda.cu'])
-        ],
+        ] + cythonize([
+            Extension("mmdet3d.utils.plane_ransac", ["mmdet3d/utils/plane_ransac.pyx"])
+        ]),
         cmdclass={'build_ext': BuildExtension},
         zip_safe=False)

@@ -105,7 +105,7 @@ def crop_image_patch(pos_proposals, gt_masks, pos_assigned_gt_inds, org_img):
     return img_patches, masks
 
 
-def create_groundtruth_database(dataset_class_name,
+def create_groundtruth_database(dataset_class,
                                 data_path,
                                 info_prefix,
                                 info_path=None,
@@ -114,15 +114,12 @@ def create_groundtruth_database(dataset_class_name,
                                 database_save_path=None,
                                 db_info_save_path=None,
                                 relative_path=True,
-                                add_rgb=False,
-                                lidar_only=False,
-                                bev_only=False,
-                                coors_range=None,
                                 with_mask=False):
     """Given the raw data, generate the ground truth database.
 
     Args:
-        dataset_class_name （str): Name of the input dataset.
+        dataset_class (str | Dataset): Name of the input dataset,
+            or directly take dataset instance as input
         data_path (str): Path of the data.
         info_prefix (str): Prefix of the info file.
         info_path (str): Path of the info file.
@@ -140,81 +137,85 @@ def create_groundtruth_database(dataset_class_name,
         with_mask (bool): Whether to use mask.
             Default: False.
     """
-    print(f'Create GT Database of {dataset_class_name}')
-    dataset_cfg = dict(
-        type=dataset_class_name, data_root=data_path, ann_file=info_path)
-    if dataset_class_name == 'KittiDataset':
-        file_client_args = dict(backend='disk')
-        dataset_cfg.update(
-            test_mode=False,
-            split='training',
-            modality=dict(
-                use_lidar=True,
-                use_depth=False,
-                use_lidar_intensity=True,
-                use_camera=with_mask,
-            ),
-            pipeline=[
-                dict(
-                    type='LoadPointsFromFile',
-                    coord_type='LIDAR',
-                    load_dim=4,
-                    use_dim=4,
-                    file_client_args=file_client_args),
-                dict(
-                    type='LoadAnnotations3D',
-                    with_bbox_3d=True,
-                    with_label_3d=True,
-                    file_client_args=file_client_args)
-            ])
+    if isinstance(dataset_class, str):
+        print(f'Create GT Database of {dataset_class}')
+        dataset_cfg = dict(
+            type=dataset_class, data_root=data_path, ann_file=info_path)
+        if dataset_class == 'KittiDataset':
+            file_client_args = dict(backend='disk')
+            dataset_cfg.update(
+                test_mode=False,
+                split='training',
+                modality=dict(
+                    use_lidar=True,
+                    use_depth=False,
+                    use_lidar_intensity=True,
+                    use_camera=with_mask,
+                ),
+                pipeline=[
+                    dict(
+                        type='LoadPointsFromFile',
+                        coord_type='LIDAR',
+                        load_dim=4,
+                        use_dim=4,
+                        file_client_args=file_client_args),
+                    dict(
+                        type='LoadAnnotations3D',
+                        with_bbox_3d=True,
+                        with_label_3d=True,
+                        file_client_args=file_client_args)
+                ])
 
-    elif dataset_class_name == 'NuScenesDataset':
-        dataset_cfg.update(
-            use_valid_flag=True,
-            pipeline=[
-                dict(
-                    type='LoadPointsFromFile',
-                    coord_type='LIDAR',
-                    load_dim=5,
-                    use_dim=5),
-                dict(
-                    type='LoadPointsFromMultiSweeps',
-                    sweeps_num=10,
-                    use_dim=[0, 1, 2, 3, 4],
-                    pad_empty_sweeps=True,
-                    remove_close=True),
-                dict(
-                    type='LoadAnnotations3D',
-                    with_bbox_3d=True,
-                    with_label_3d=True)
-            ])
+        elif dataset_class == 'NuScenesDataset':
+            dataset_cfg.update(
+                use_valid_flag=True,
+                pipeline=[
+                    dict(
+                        type='LoadPointsFromFile',
+                        coord_type='LIDAR',
+                        load_dim=5,
+                        use_dim=5),
+                    dict(
+                        type='LoadPointsFromMultiSweeps',
+                        sweeps_num=10,
+                        use_dim=[0, 1, 2, 3, 4],
+                        pad_empty_sweeps=True,
+                        remove_close=True),
+                    dict(
+                        type='LoadAnnotations3D',
+                        with_bbox_3d=True,
+                        with_label_3d=True)
+                ])
 
-    elif dataset_class_name == 'WaymoDataset':
-        file_client_args = dict(backend='disk')
-        dataset_cfg.update(
-            test_mode=False,
-            split='training',
-            modality=dict(
-                use_lidar=True,
-                use_depth=False,
-                use_lidar_intensity=True,
-                use_camera=False,
-            ),
-            pipeline=[
-                dict(
-                    type='LoadPointsFromFile',
-                    coord_type='LIDAR',
-                    load_dim=6,
-                    use_dim=5,
-                    file_client_args=file_client_args),
-                dict(
-                    type='LoadAnnotations3D',
-                    with_bbox_3d=True,
-                    with_label_3d=True,
-                    file_client_args=file_client_args)
-            ])
+        elif dataset_class == 'WaymoDataset':
+            file_client_args = dict(backend='disk')
+            dataset_cfg.update(
+                test_mode=False,
+                split='training',
+                modality=dict(
+                    use_lidar=True,
+                    use_depth=False,
+                    use_lidar_intensity=True,
+                    use_camera=False,
+                ),
+                pipeline=[
+                    dict(
+                        type='LoadPointsFromFile',
+                        coord_type='LIDAR',
+                        load_dim=6,
+                        use_dim=5,
+                        file_client_args=file_client_args),
+                    dict(
+                        type='LoadAnnotations3D',
+                        with_bbox_3d=True,
+                        with_label_3d=True,
+                        file_client_args=file_client_args)
+                ])
 
-    dataset = build_dataset(dataset_cfg)
+        dataset = build_dataset(dataset_cfg)
+    else:
+        print(f'Create GT Database of {dataset_class.__class__.__name__}')
+        dataset = dataset_class
 
     if database_save_path is None:
         database_save_path = osp.join(data_path, f'{info_prefix}_gt_database')

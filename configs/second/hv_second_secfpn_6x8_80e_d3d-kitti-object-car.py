@@ -28,3 +28,5 @@ train_cfg = dict(
     allowed_border=0,
     pos_weight=-1,
     debug=False)
+
+evaluation = dict(msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')

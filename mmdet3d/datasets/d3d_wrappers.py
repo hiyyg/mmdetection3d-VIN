@@ -3,17 +3,23 @@ This file provides dataset interfaces with d3d as backend
 '''
 import d3d
 import mmcv
+import msgpack
+import numpy as np
+import os.path as osp
 import torch
 import tqdm
-import numpy as np
-from pathlib import Path
+from d3d.abstraction import ObjectTag, ObjectTarget3D, Target3DArray
+from d3d.benchmarks import DetectionEvaluator
 from d3d.box import crop_3dr
 from d3d.dataset.base import DetectionDatasetBase
 from d3d.dataset.kitti import KittiObjectLoader
 from d3d.dataset.kitti360 import KITTI360Loader
 from d3d.dataset.nuscenes import NuscenesLoader
 from d3d.dataset.waymo import WaymoLoader
+from mmcv.utils import print_log
+from pathlib import Path
 from random import random
+from scipy.spatial.transform import Rotation
 
 from mmdet3d.core.bbox import LiDARInstance3DBoxes
 from mmdet3d.datasets.custom_3d import Custom3DDataset
@@ -36,23 +42,29 @@ def resolve_dataset_type(ds_type) -> DetectionDatasetBase:
     else:
         raise ValueError("Dataset name not recognized!")
 
-def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str):
+def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False):
     metalist = []
 
+    loader_size = 3 if debug else len(loader) 
     if loader.phase == "testing":
         # currently no much metadata for testing samples
-        for i in tqdm.trange(len(loader), desc="creating annotation"):
+        for i in tqdm.trange(loader_size, desc="creating annotation"):
             metadata = dict(uidx=loader.identity(i))
             metalist.append(metadata)
     else: # traininig or validation phase
-        for i in tqdm.trange(len(loader), desc="creating annotation"):
+        for i in tqdm.trange(loader_size, desc="creating annotation"):
             metadata = dict(uidx=loader.identity(i))
             annos = dict(arr=[], num_lidar_pts=[])
 
-            # add array of objects
+            # parse array of objects
             objects = loader.annotation_3dobject(i)
+            metadata['anno_frame'] = objects.frame
             box_arr = objects.to_numpy()
+
+            # adapt to mmdet3d coordinate
             box_arr[:, 2] -= box_arr[:, 5] / 2
+            box_arr[:, [3,4]] = box_arr[:, [4,3]].copy()
+            box_arr[:, 6] += np.pi / 2
             annos['arr'] = box_arr[:, :8].tolist()
             
             # calculate number of points in the boxes
@@ -67,29 +79,35 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str):
 
     return metalist
 
-def d3d_data_prep(ds_name, root_path, info_prefix, out_dir,
-    trainval_split=0.8, inzip=False, lidar_name=0):
+def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
+    trainval_split=0.8, inzip=False, lidar_name=0, debug=False):
     ds_type = resolve_dataset_type(ds_name)
     seed = int(str(random())[2:])
     if isinstance(lidar_name, int):
         lidar_name = ds_type.VALID_LIDAR_NAMES[lidar_name]
+    if out_dir is None:
+        out_dir = root_path
 
     # Creating info for training set
     train_loader = ds_type(root_path, inzip=inzip, phase="training",
         trainval_split=trainval_split, trainval_random=seed)
     info_path = Path(root_path, f'{info_prefix}_infos_train.pkl')
-    mmcv.dump(collect_ann_file(train_loader, lidar_name), info_path)
+    mmcv.dump(collect_ann_file(train_loader, lidar_name, debug=debug), info_path)
 
     # Creating info to validation set
     val_loader = ds_type(root_path, inzip=inzip, phase="validation",
         trainval_split=trainval_split, trainval_random=seed)
     info_path = Path(root_path, f'{info_prefix}_infos_val.pkl')
-    mmcv.dump(collect_ann_file(val_loader, lidar_name), info_path)
+    mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug), info_path)
 
     # Creating info to test set
     test_loader = ds_type(root_path, inzip=inzip, phase="testing")
     info_path = Path(root_path, f'{info_prefix}_infos_test.pkl')
-    mmcv.dump(collect_ann_file(test_loader, lidar_name), info_path)
+    mmcv.dump(collect_ann_file(test_loader, lidar_name, debug=debug), info_path)
+
+    # Creating dataset ground-truth sampler
+    # TODO: create pipeline for each possible dataset and call create_groundtruth_database
+
 
 @DATASETS.register_module()
 class D3DDataset(Custom3DDataset):
@@ -100,7 +118,7 @@ class D3DDataset(Custom3DDataset):
 
                  inzip=False,
                  phase="training",
-                 trainval_split=1,
+                 trainval_split=0.8,
                  trainval_random=False,
 
                  pipeline=None,
@@ -112,7 +130,7 @@ class D3DDataset(Custom3DDataset):
                  lidar_name=0,
                  camera_name=0):
 
-        # create loader and annotation file if needed
+        # create loader
         ds_type = resolve_dataset_type(ds_type)
         self._loader = ds_type(data_root, inzip=inzip,
             phase=phase, trainval_split=trainval_split,
@@ -128,15 +146,12 @@ class D3DDataset(Custom3DDataset):
         else:
             self.camera_name = str(camera_name)
 
-        # create info file if needed
+        # create annotation file if needed
         if not Path(ann_file).exists():
             mmcv.dump(collect_ann_file(self._loader, self.lidar_name), ann_file)
 
         # then call base constructor
-        if classes:
-            classes = [ds_type.VALID_OBJ_CLASSES[c] for c in classes]
-        else:
-            classes = [c for c in ds_type.VALID_OBJ_CLASSES]
+        classes = classes or [c.name for c in ds_type.VALID_OBJ_CLASSES]
         super().__init__(
             data_root=data_root,
             ann_file=ann_file,
@@ -173,11 +188,11 @@ class D3DDataset(Custom3DDataset):
                 cenum = self._loader.VALID_OBJ_CLASSES(cid)
                 gt_names.append(cenum.name)
                 if cenum.name in self.CLASSES:
-                    gt_labels_3d.append(self.CLASSES.index(cenum))
+                    gt_labels_3d.append(self.CLASSES.index(cenum.name))
                 else:
                     gt_labels_3d.append(-1)
             gt_labels_3d = np.asarray(gt_labels_3d)
-            gt_names = np.asanyarray(gt_names)
+            gt_names = np.asarray(gt_names)
 
             input_dict['ann_info'] = dict(
                 gt_bboxes_3d=gt_bboxes_3d,
@@ -187,14 +202,60 @@ class D3DDataset(Custom3DDataset):
 
         return input_dict
 
-    # def format_results(self):
-    #     pass
+    def format_results(self, outputs, msgfile_prefix=None):
+        """Convert 3D detection results to d3d TargetArray format
+        
+        Args:
+            msgfile_prefix (str | None): The prefix of msg file.
+        """
+        assert isinstance(outputs, list), 'outputs must be a list (current type: %s)' % str(type(outputs))
 
-    # def evaluate(self):
-    #     pass
+        parsed_outputs = []
+
+        for idx, result in enumerate(outputs):
+            detections = Target3DArray(frame=self.data_infos[idx]['anno_frame'])
+            for box, score, label in zip(result['boxes_3d'].tensor.tolist(),
+                                         result['scores_3d'].tolist(),
+                                         result['labels_3d'].tolist()):
+                position = box[:3]
+                dimension = box[3:6]
+
+                # adapt back from mmdet3d format
+                position[2] += dimension[2] / 2
+                dimension[0], dimension[1] = dimension[1], dimension[0]
+                rotation = Rotation.from_euler("Z", box[6] - np.pi / 2)
+
+                tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
+                detections.append(ObjectTarget3D(position, rotation, dimension, tag))
+            parsed_outputs.append(detections)
+
+        if msgfile_prefix is not None:
+            mmcv.mkdir_or_exist(msgfile_prefix)
+            with open(osp.join(msgfile_prefix, "results.msg"), "wb") as fout:
+                fout.write(msgpack.packb([arr.serialize() for arr in parsed_outputs], use_single_float=True))
+
+        return parsed_outputs
+
+    def evaluate(self,
+                 results, 
+                 logger=None,
+                 msgfile_prefix=None):
+        classes = [self._loader.VALID_OBJ_CLASSES[name] for name in self.CLASSES]
+        evaluator = DetectionEvaluator(classes, 0.7)
+
+        anno_dt_list = self.format_results(results, msgfile_prefix=msgfile_prefix)
+
+        print_log('Calculating eval metrics', logger=logger)
+        for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
+            anno_gt = self._loader.annotation_3dobject(info['uidx'])
+            anno_dt = anno_dt_list[i]
+            stats = evaluator.calc_stats(anno_gt, anno_dt)
+            evaluator.add_stats(stats)
+
+        results_dict = dict()
+        for k, v in evaluator.ap().items():
+            results_dict["AP_" + k.name] = v
+        return results_dict
 
 if __name__ == "__main__":
-    ds = D3DDataset("kitti", "/mnt/storage8t/jacobz/kitti_object_extracted",
-        "/mnt/storage8t/jacobz/kitti_object_extracted/temp_info_trainval.pkl",
-        trainval_split=0.8)
-    print(ds.get_data_info(2))
+    d3d_data_prep("kitti", "/mnt/storage8t/jacobz/kitti_object_extracted", "d3d_kitti_debug", debug=True)

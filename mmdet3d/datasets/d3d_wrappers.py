@@ -62,14 +62,14 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
             box_arr = objects.to_numpy()
 
             # adapt to mmdet3d coordinate
-            box_arr[:, 2] -= box_arr[:, 5] / 2
-            box_arr[:, [3,4]] = box_arr[:, [4,3]].copy()
-            box_arr[:, 6] += np.pi / 2
-            annos['arr'] = box_arr[:, :8].tolist()
+            box_arr[:, 4] -= box_arr[:, 7] / 2 # move center to box bottom
+            box_arr[:, [5,6]] = box_arr[:, [6,7]].copy() # swap w and h
+            box_arr[:, 8] += np.pi / 2 # change yaw angle zero direction
+            annos['arr'] = box_arr.tolist()
             
             # calculate number of points in the boxes
             cloud = loader.lidar_data(i, names=lidar_name)
-            box_arr = torch.tensor(box_arr[:, :7], dtype=torch.float32)
+            box_arr = torch.tensor(box_arr[:, 2:9], dtype=torch.float32)
             mask = crop_3dr(torch.tensor(cloud), box_arr)
             npts = mask.sum(dim=1)
             annos['num_lidar_pts'] = npts.tolist()
@@ -163,6 +163,9 @@ class D3DDataset(Custom3DDataset):
             test_mode=test_mode
         )
 
+        # store box dimension in case it's not full
+        self._box_dimension = None
+
     def get_data_info(self, index):
         sample_idx = self.data_infos[index]["uidx"]
         with self._loader.return_path():
@@ -181,10 +184,18 @@ class D3DDataset(Custom3DDataset):
 
         if not self.test_mode:
             annos = self.data_infos[index]['annos']
-            box_arr = np.array(annos['arr'])
-            gt_bboxes_3d = LiDARInstance3DBoxes(box_arr[:, :7])
+            if annos['arr']:
+                box_arr = np.array(annos['arr'])
+            else:
+                box_arr = np.empty((0, self._box_dimension))
+            if box_arr.shape[1] == 12: # with velocity
+                self._box_dimension = 12
+                gt_bboxes_3d = LiDARInstance3DBoxes(box_arr[:, 2:11], box_dim=9)
+            else:
+                self._box_dimension = 9
+                gt_bboxes_3d = LiDARInstance3DBoxes(box_arr[:, 2:9], box_dim=7)
             gt_labels_3d, gt_names = [], []
-            for cid in box_arr[:, 7].astype(int):
+            for cid in box_arr[:, 0].astype(int):
                 cenum = self._loader.VALID_OBJ_CLASSES(cid)
                 gt_names.append(cenum.name)
                 if cenum.name in self.CLASSES:
@@ -199,6 +210,9 @@ class D3DDataset(Custom3DDataset):
                 gt_labels_3d=gt_labels_3d,
                 gt_names=gt_names
             )
+
+        # mmcv.dump(input_dict, f"./.dev_scripts/temp/%s_d3d.pkl" % (sample_idx[0] + str(sample_idx[1])))
+        # raise ValueError("Break")
 
         return input_dict
 
@@ -256,6 +270,9 @@ class D3DDataset(Custom3DDataset):
         for k, v in evaluator.ap().items():
             results_dict["AP_" + k.name] = v
         return results_dict
+
+    def __str__(self):
+        return "D3DDataset(%s), phase: %s" % (self._loader.__class__.__name__, self._loader.phase)
 
 if __name__ == "__main__":
     d3d_data_prep("kitti", "/mnt/storage8t/jacobz/kitti_object_extracted", "d3d_kitti_debug", debug=True)

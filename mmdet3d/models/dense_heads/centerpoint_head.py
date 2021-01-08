@@ -591,13 +591,14 @@ class CenterHead(nn.Module):
             pred = pred.view(pred.size(0), -1, pred.size(3))
             pred = self._gather_feat(pred, ind)
             mask = masks[task_id].unsqueeze(2).expand_as(target_box).float()
-            isnotnan = (~torch.isnan(target_box)).float()
-            mask *= isnotnan
+            isnotnan = ~torch.isnan(target_box)
 
             code_weights = self.train_cfg.get('code_weights', None)
             bbox_weights = mask * mask.new_tensor(code_weights)
             loss_bbox = self.loss_bbox(
-                pred, target_box, bbox_weights, avg_factor=(num + 1e-4))
+                pred[isnotnan], target_box[isnotnan], bbox_weights[isnotnan], avg_factor=(num + 1e-4))
+            assert not torch.any(torch.isnan(loss_bbox)), "NAN detected!"
+                
             loss_dict[f'task{task_id}.loss_heatmap'] = loss_heatmap
             loss_dict[f'task{task_id}.loss_bbox'] = loss_bbox
         return loss_dict

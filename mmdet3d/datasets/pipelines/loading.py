@@ -97,6 +97,8 @@ class LoadPointsFromMultiSweeps(object):
                  test_mode=False):
         self.load_dim = load_dim
         self.sweeps_num = sweeps_num
+        if isinstance(use_dim, int):
+            use_dim = list(range(use_dim))
         self.use_dim = use_dim
         self.file_client_args = file_client_args.copy()
         self.file_client = None

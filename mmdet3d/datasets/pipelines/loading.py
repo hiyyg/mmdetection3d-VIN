@@ -198,6 +198,7 @@ class LoadPointsFromMultiSweeps(object):
         points = points.cat(sweep_points_list)
         points = points[:, self.use_dim]
         results['points'] = points
+        # TODO: add indicator for original number of point clouds
         return results
 
     def __repr__(self):
@@ -509,17 +510,21 @@ class LoadAnnotations3D(LoadAnnotations):
             dict: The dict containing the semantic segmentation annotations.
         """
         pts_semantic_mask_path = results['ann_info']['pts_semantic_mask_path']
+        if isinstance(self.with_seg_3d, str):
+            pts_dtype = self.with_seg_3d
+        else:
+            pts_dtype = np.int
 
         if self.file_client is None:
             self.file_client = mmcv.FileClient(**self.file_client_args)
         try:
             mask_bytes = self.file_client.get(pts_semantic_mask_path)
             # add .copy() to fix read-only bug
-            pts_semantic_mask = np.frombuffer(mask_bytes, dtype=np.int).copy()
+            pts_semantic_mask = np.frombuffer(mask_bytes, dtype=pts_dtype).copy()
         except ConnectionError:
             mmcv.check_file_exist(pts_semantic_mask_path)
             pts_semantic_mask = np.fromfile(
-                pts_semantic_mask_path, dtype=np.long)
+                pts_semantic_mask_path, dtype=pts_dtype)
 
         results['pts_semantic_mask'] = pts_semantic_mask
         results['pts_seg_fields'].append('pts_semantic_mask')

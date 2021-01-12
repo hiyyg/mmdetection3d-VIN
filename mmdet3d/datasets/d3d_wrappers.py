@@ -49,7 +49,7 @@ def resolve_dataset_type(ds_type) -> DetectionDatasetBase:
     else:
         raise ValueError("Dataset name not recognized!")
 
-def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False):
+def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False, ninter_frames: int = 6):
     metalist = []
     default_frame = loader.VALID_LIDAR_NAMES[0]
 
@@ -63,12 +63,12 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
             sweeps = []
             calib = loader.calibration_data(i)
             with loader.return_path():
-                inter_lidar = loader.intermediate_data(i, names=default_frame, ninter_frames=3)
+                inter_lidar = loader.intermediate_data(i, names=default_frame, ninter_frames=ninter_frames)
             pose = loader.pose(i)
             for frame in inter_lidar:
                 lidar_ego_rt = calib.get_extrinsic(frame_from=default_frame)
                 rt = np.linalg.inv(lidar_ego_rt).dot(np.linalg.inv(pose.homo())).dot(frame.pose.homo()).dot(lidar_ego_rt)
-                sweep = dict(data_path=frame.file, timestamp=frame.timestamp,
+                sweep = dict(data_path=frame.file.resolve(), timestamp=frame.timestamp,
                              sensor2lidar_translation=rt[:3,3], sensor2lidar_rotation=rt[:3,:3])
                 sweeps.append(sweep)
             metadata['sweeps'] = sweeps
@@ -107,12 +107,12 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
             # add intermediate lidar frames
             sweeps = []
             with loader.return_path():
-                inter_lidar = loader.intermediate_data(i, names=default_frame, ninter_frames=3)
+                inter_lidar = loader.intermediate_data(i, names=default_frame, ninter_frames=ninter_frames)
             pose = loader.pose(i)
             for frame in inter_lidar:
                 lidar_ego_rt = calib.get_extrinsic(frame_from=default_frame)
                 rt = np.linalg.inv(lidar_ego_rt).dot(np.linalg.inv(pose.homo())).dot(frame.pose.homo()).dot(lidar_ego_rt)
-                sweep = dict(data_path=frame.file, timestamp=frame.timestamp,
+                sweep = dict(data_path=frame.file.resolve(), timestamp=frame.timestamp,
                              sensor2lidar_translation=rt[:3,3], sensor2lidar_rotation=rt[:3,:3])
                 sweeps.append(sweep)
             metadata['sweeps'] = sweeps
@@ -228,6 +228,12 @@ class D3DDataset(Custom3DDataset):
                 gt_names=gt_names
             )
 
+            # add semantic points if available
+            if hasattr(self._loader, "annotation_3dpoints"):
+                with self._loader.return_path():
+                    semantic_path = self._loader.annotation_3dpoints(i, names=self.lidar_name)
+                metadata['pts_semantic_mask_path'] = semantic_path
+
         # mmcv.dump(input_dict, f"./.dev_scripts/temp_d3d/%s_nus.pkl" % (sample_idx[0] + '-' + str(sample_idx[1])))
         # mmcv.dump(input_dict, f"./.dev_scripts/temp_d3d/%d_kitti.pkl" % sample_idx)
 
@@ -289,7 +295,7 @@ class D3DDataset(Custom3DDataset):
 
         results_dict = dict()
         for k, v in evaluator.ap().items():
-            results_dict["AP_" + k.name] = v
+            results_dict["AP/" + k.name] = v
         return results_dict
 
     def __str__(self):

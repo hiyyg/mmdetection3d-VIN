@@ -33,12 +33,12 @@ model = dict(
         type='CenterHead',
         in_channels=sum([128, 128, 128]),
         tasks=[
-            dict(num_class=1, class_names=['car']),
-            dict(num_class=2, class_names=['truck', 'construction_vehicle']),
-            dict(num_class=2, class_names=['bus', 'trailer']),
-            dict(num_class=1, class_names=['barrier']),
-            dict(num_class=2, class_names=['motorcycle', 'bicycle']),
-            dict(num_class=2, class_names=['pedestrian', 'traffic_cone']),
+            dict(class_names=['car']),
+            dict(class_names=['truck', 'construction_vehicle']),
+            dict(class_names=['bus', 'trailer']),
+            dict(class_names=['barrier']),
+            dict(class_names=['motorcycle', 'bicycle']),
+            dict(class_names=['pedestrian', 'traffic_cone']),
         ],
         common_heads=dict(
             reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),

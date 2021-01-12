@@ -15,6 +15,63 @@ from mmdet.core import build_bbox_coder, multi_apply
 
 
 @HEADS.register_module()
+class SemanticHead(nn.Module):
+    """Semantic head for CenterHead
+    """
+    def __init__(self,
+                 in_feat_channels,
+                 in_pts_channels,
+                 num_classes,
+                 point_cloud_range,
+                 mlp_layer_nums=3,
+                 mlp_channels=256,
+                 conv_cfg=dict(type='Conv2d'),
+                 norm_cfg=dict(type='BN2d'),
+                 bias='auto',
+                 **kwargs):
+        mlps = [nn.Linear(in_feat_channels + in_pts_channels, mlp_channels)]
+        for _ in range(mlp_layer_nums - 1):
+            mlps.append(nn.Linear(mlp_channels, mlp_channels))
+        mlps.append(nn.Linear(mlp_channels, num_classes))
+        self.point_mlps = nn.Sequential(mlps)
+
+        self.point_cloud_range = point_cloud_range
+
+    def init_weights(self):
+        for linear in self.point_mlps:
+            kaiming_init(linear)
+
+    def forward(self, pts, pts_feature):
+        """
+        Args:
+            pts_feature (torch.float32): Features from voxel in shape (N, C, H, W).
+                H for y and W for x.
+        """
+        # TODO: add convs for pts_feature
+
+        # calculate point positions
+        pts = pts.detach()
+        _, _, H, W = pts_feature.shape
+        D = 1
+        x_range = self.point_cloud_range[3] - self.point_cloud_range[0]
+        y_range = self.point_cloud_range[4] - self.point_cloud_range[1]
+        z_range = self.point_cloud_range[5] - self.point_cloud_range[2]
+        x_coord = (pts[:, 0] - self.point_cloud_range[0]) * W // x_range
+        y_coord = (pts[:, 1] - self.point_cloud_range[1]) * H // y_range
+        z_coord = (pts[:, 2] - self.point_cloud_range[2]) * D // z_range
+        selected_feat = pts_feature[:, :, y_coord, x_coord]
+
+        # concatenate feature map
+        pts[:, 0] -= x_coord / W * x_range
+        pts[:, 1] -= y_coord / H * y_range
+        pts[:, 2] -= z_coord / D * z_range
+        feat = torch.cat([pts, selected_feat], dim=1)
+        
+        feat = self.point_mlps(feat)
+
+        return feat
+
+@HEADS.register_module()
 class SeparateHead(nn.Module):
     """SeparateHead for CenterHead.
 
@@ -275,6 +332,7 @@ class CenterHead(nn.Module):
                      type='L1Loss', reduction='none', loss_weight=0.25),
                  seperate_head=dict(
                      type='SeparateHead', init_bias=-2.19, final_kernel=3),
+                 semantic_head=None,
                  share_conv_channel=64,
                  num_heatmap_convs=2,
                  conv_cfg=dict(type='Conv2d'),
@@ -316,12 +374,21 @@ class CenterHead(nn.Module):
                 in_channels=share_conv_channel, heads=heads, num_cls=num_cls)
             self.task_heads.append(builder.build_head(seperate_head))
 
+        if semantic_head is not None:
+            semantic_head.update(
+                in_channels=share_conv_channel)
+            self.semantic_head = builder.build_head(semantic_head)
+        else:
+            self.semantic_head = None
+
     def init_weights(self):
         """Initialize weights."""
         for task_head in self.task_heads:
             task_head.init_weights()
+        if self.semantic_head:
+            self.semantic_head.init_weights()
 
-    def forward_single(self, x):
+    def forward_single(self, pts, feats):
         """Forward function for CenterPoint.
 
         Args:
@@ -333,24 +400,31 @@ class CenterHead(nn.Module):
         """
         ret_dicts = []
 
-        x = self.shared_conv(x)
+        x = self.shared_conv(feats)
 
         for task in self.task_heads:
             ret_dicts.append(task(x))
 
+        # append semantic result at the end
+        if self.semantic_head:
+            ret_dicts.append(self.semantic_head(pts, x))
+
         return ret_dicts
 
-    def forward(self, feats):
+    def forward(self, points, feats):
         """Forward pass.
 
         Args:
+            points (torch.Tensor): Original poiot cloud with primitive features
             feats (list[torch.Tensor]): Multi-level features, e.g.,
                 features produced by FPN.
 
         Returns:
             tuple(list[dict]): Output results for tasks.
         """
-        return multi_apply(self.forward_single, feats)
+        pts_repeated = [points] * len(feats)
+        results = multi_apply(self.forward_single, pts_repeated, feats)
+        return results
 
     def _gather_feat(self, feat, ind, mask=None):
         """Gather feature map.
@@ -553,13 +627,18 @@ class CenterHead(nn.Module):
         return heatmaps, anno_boxes, inds, masks
 
     @force_fp32(apply_to=('preds_dicts'))
-    def loss(self, gt_bboxes_3d, gt_labels_3d, preds_dicts, **kwargs):
+    def loss(self,
+             gt_bboxes_3d, gt_labels_3d, preds_dicts,
+             pts_semantic_mask=None, pts_instance_mask=None,
+             **kwargs):
         """Loss function for CenterHead.
 
         Args:
             gt_bboxes_3d (list[:obj:`LiDARInstance3DBoxes`]): Ground
                 truth gt boxes.
             gt_labels_3d (list[torch.Tensor]): Labels of boxes.
+            pts_semantic_mask (list[torch.Tensor]): Semantic labels of the point cloud.
+            pts_instance_mask (list[torch.Tensor]): Instance labels of the point cloud.
             preds_dicts (dict): Output of forward function.
 
         Returns:
@@ -599,8 +678,8 @@ class CenterHead(nn.Module):
                 pred[isnotnan], target_box[isnotnan], bbox_weights[isnotnan], avg_factor=(num + 1e-4))
             assert not torch.any(torch.isnan(loss_bbox)), "NAN detected!"
                 
-            loss_dict[f'task{task_id}.loss_heatmap'] = loss_heatmap
-            loss_dict[f'task{task_id}.loss_bbox'] = loss_bbox
+            loss_dict[f'task{task_id}/loss_heatmap'] = loss_heatmap
+            loss_dict[f'task{task_id}/loss_bbox'] = loss_bbox
         return loss_dict
 
     def get_bboxes(self, preds_dicts, img_metas, img=None, rescale=False):

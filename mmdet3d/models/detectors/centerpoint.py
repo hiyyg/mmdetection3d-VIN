@@ -46,10 +46,13 @@ class CenterPoint(MVXTwoStageDetector):
         return x
 
     def forward_pts_train(self,
+                          points,
                           pts_feats,
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
+                          pts_semantic_mask=None,
+                          pts_instance_mask=None,
                           gt_bboxes_ignore=None):
         """Forward function for point cloud branch.
 
@@ -66,14 +69,14 @@ class CenterPoint(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self.pts_bbox_head(pts_feats)
+        outs = self.pts_bbox_head(points, pts_feats)
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
         return losses
 
-    def simple_test_pts(self, x, img_metas, rescale=False):
+    def simple_test_pts(self, points, pts_feats, img_metas, rescale=False):
         """Test function of point cloud branch."""
-        outs = self.pts_bbox_head(x)
+        outs = self.pts_bbox_head(points, pts_feats)
         bbox_list = self.pts_bbox_head.get_bboxes(
             outs, img_metas, rescale=rescale)
         bbox_results = [
@@ -82,7 +85,7 @@ class CenterPoint(MVXTwoStageDetector):
         ]
         return bbox_results
 
-    def aug_test_pts(self, feats, img_metas, rescale=False):
+    def aug_test_pts(self, pts_feats, img_metas, rescale=False):
         """Test function of point cloud branch with augmentaiton.
 
         The function implementation process is as follows:
@@ -93,7 +96,7 @@ class CenterPoint(MVXTwoStageDetector):
             - step 4: merge results.
 
         Args:
-            feats (list[torch.Tensor]): Feature of point cloud.
+            pts_feats (list[torch.Tensor]): Feature of point cloud.
             img_metas (list[dict]): Meta information of samples.
             rescale (bool): Whether to rescale bboxes. Default: False.
 
@@ -106,7 +109,7 @@ class CenterPoint(MVXTwoStageDetector):
         """
         # only support aug_test for one sample
         outs_list = []
-        for x, img_meta in zip(feats, img_metas):
+        for x, img_meta in zip(pts_feats, img_metas):
             outs = self.pts_bbox_head(x)
             # merge augmented outputs before decoding bboxes
             for task_id, out in enumerate(outs):

@@ -231,8 +231,8 @@ class D3DDataset(Custom3DDataset):
             # add semantic points if available
             if hasattr(self._loader, "annotation_3dpoints"):
                 with self._loader.return_path():
-                    semantic_path = self._loader.annotation_3dpoints(i, names=self.lidar_name)
-                metadata['pts_semantic_mask_path'] = semantic_path
+                    semantic_path = self._loader.annotation_3dpoints(sample_idx, names=self.lidar_name)
+                input_dict['ann_info']['pts_semantic_mask_path'] = semantic_path
 
         # mmcv.dump(input_dict, f"./.dev_scripts/temp_d3d/%s_nus.pkl" % (sample_idx[0] + '-' + str(sample_idx[1])))
         # mmcv.dump(input_dict, f"./.dev_scripts/temp_d3d/%d_kitti.pkl" % sample_idx)

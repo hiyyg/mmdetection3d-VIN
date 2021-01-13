@@ -8,8 +8,21 @@ from mmdet3d.utils.plane_ransac import plane_ransac, plane_ransac_batch
 from mmdet.datasets.builder import PIPELINES
 from mmdet.datasets.pipelines import RandomFlip
 from ..registry import OBJECTSAMPLERS
-from .data_augment_utils import noise_per_object_v3_
+from .data_augment_utils import noise_per_object_v3_, reverse_index
 
+def mask_array_and_index(data_mask, array, index):
+    '''
+    data_mask: boolean array
+    index: long array
+    array: actual data
+    '''
+    assert len(index) == len(array)
+    reverse_idx = reverse_index(index, len(data_mask))
+    reverse_idx = reverse_idx[data_mask]
+    index = reverse_index(reverse_idx, len(array))
+
+    array_mask = index != np.sum(data_mask)
+    return array[array_mask], index[array_mask]
 
 @PIPELINES.register_module()
 class RandomFlip3D(RandomFlip):
@@ -142,8 +155,9 @@ class ObjectSample(object):
             np.ndarray: Points with those in the boxes removed.
         """
         masks = box_np_ops.points_in_rbbox(points.coord.numpy(), boxes)
-        points = points[np.logical_not(masks.any(-1))]
-        return points
+        masks = np.logical_not(masks.any(-1))
+        points = points[masks]
+        return points, masks
 
     def __call__(self, input_dict):
         """Call function to sample ground truth objects to the data.
@@ -185,9 +199,17 @@ class ObjectSample(object):
                 np.concatenate(
                     [gt_bboxes_3d.tensor.numpy(), sampled_gt_bboxes_3d]))
 
-            points = self.remove_points_in_boxes(points, sampled_gt_bboxes_3d)
-            # check the points dimension
-            points = points.cat([sampled_points, points])
+            clean_points, masks = self.remove_points_in_boxes(points, sampled_gt_bboxes_3d)
+            points_combined = points.cat([clean_points, sampled_points])
+
+            if 'pts_semantic_mask' in input_dict:
+                # filter out semantic label for removed points
+                semantic_points = input_dict['pts_semantic_mask']
+                semantic_idx = input_dict['pts_semantic_idx']
+
+                masked_points, masked_idx = mask_array_and_index(masks, semantic_points, semantic_idx)
+                input_dict['pts_semantic_mask'] = masked_points
+                input_dict['pts_semantic_idx'] = masked_idx
 
             if self.sample_2d:
                 sampled_gt_bboxes_2d = sampled_dict['gt_bboxes_2d']
@@ -199,7 +221,7 @@ class ObjectSample(object):
 
         input_dict['gt_bboxes_3d'] = gt_bboxes_3d
         input_dict['gt_labels_3d'] = gt_labels_3d.astype(np.long)
-        input_dict['points'] = points
+        input_dict['points'] = points_combined
 
         return input_dict
 
@@ -439,7 +461,13 @@ class PointShuffle(object):
             dict: Results after filtering, 'points' keys are updated \
                 in the result dict.
         """
-        input_dict['points'].shuffle()
+        perm = input_dict['points'].shuffle()
+        if 'pts_semantic_mask' in input_dict:
+            semantic_idx = input_dict['pts_semantic_idx']
+            reverse_idx = reverse_index(semantic_idx, len(perm))
+            reverse_idx = reverse_idx[perm]
+            input_dict['pts_semantic_idx'] = reverse_index(
+                reverse_idx, len(semantic_idx))
         return input_dict
 
     def __repr__(self):
@@ -517,6 +545,17 @@ class PointsRangeFilter(object):
         points_mask = points.in_range_3d(self.pcd_range)
         clean_points = points[points_mask]
         input_dict['points'] = clean_points
+
+        if 'pts_semantic_mask' in input_dict:
+            # filter out semantic label for removed points
+            semantic_points = input_dict['pts_semantic_mask']
+            semantic_idx = input_dict['pts_semantic_idx']
+
+            masked_points, masked_idx = mask_array_and_index(
+                points_mask.numpy(), semantic_points, semantic_idx)
+            input_dict['pts_semantic_mask'] = masked_points
+            input_dict['pts_semantic_idx'] = masked_idx
+
         return input_dict
 
     def __repr__(self):

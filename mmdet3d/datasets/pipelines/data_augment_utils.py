@@ -406,3 +406,13 @@ def noise_per_object_v3_(gt_boxes,
                           rot_transforms, valid_mask)
 
     box3d_transform_(gt_boxes, loc_transforms, rot_transforms, valid_mask)
+
+def reverse_index(index, data_len):
+    '''
+    Usage:
+        selection = data[index]
+        data = selection[reverse_index(index, data_len)]
+    '''
+    ridx = np.full(data_len+1, len(index))
+    ridx[index] = np.arange(len(index))
+    return ridx[:-1]

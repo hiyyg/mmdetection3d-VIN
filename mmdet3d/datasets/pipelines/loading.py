@@ -198,7 +198,6 @@ class LoadPointsFromMultiSweeps(object):
         points = points.cat(sweep_points_list)
         points = points[:, self.use_dim]
         results['points'] = points
-        # TODO: add indicator for original number of point clouds
         return results
 
     def __repr__(self):
@@ -215,10 +214,13 @@ class PointSegClassMapping(object):
 
     Args:
         valid_cat_ids (tuple[int]): A tuple of valid category.
+        remove_invalid (bool): Whether remove semantic label for
+            points with invalid categories
     """
 
-    def __init__(self, valid_cat_ids):
+    def __init__(self, valid_cat_ids, remove_invalid=False):
         self.valid_cat_ids = valid_cat_ids
+        self.remove_invalid = remove_invalid
 
     def __call__(self, results):
         """Call function to map original semantic class to valid category ids.
@@ -236,12 +238,19 @@ class PointSegClassMapping(object):
         pts_semantic_mask = results['pts_semantic_mask']
         neg_cls = len(self.valid_cat_ids)
 
-        for i in range(pts_semantic_mask.shape[0]):
-            if pts_semantic_mask[i] in self.valid_cat_ids:
-                converted_id = self.valid_cat_ids.index(pts_semantic_mask[i])
-                pts_semantic_mask[i] = converted_id
-            else:
-                pts_semantic_mask[i] = neg_cls
+        max_label = np.max(pts_semantic_mask)
+        max_label = max(max_label, *self.valid_cat_ids)
+        valid_table = np.full(max_label + 1, neg_cls)
+        for i, label in enumerate(self.valid_cat_ids):
+            valid_table[label] = i
+        pts_semantic_mask = valid_table[pts_semantic_mask]
+
+        if self.remove_invalid:
+            pts_semantic_idx = results['pts_semantic_idx']
+            valid_mask = pts_semantic_mask != neg_cls
+            pts_semantic_idx = pts_semantic_idx[valid_mask]
+            pts_semantic_mask = pts_semantic_mask[valid_mask]
+            results['pts_semantic_idx'] = pts_semantic_idx
 
         results['pts_semantic_mask'] = pts_semantic_mask
         return results
@@ -497,6 +506,9 @@ class LoadAnnotations3D(LoadAnnotations):
                 pts_instance_mask_path, dtype=np.long)
 
         results['pts_instance_mask'] = pts_instance_mask
+        # assuming 1-to-1 correspondance between instance mask and point cloud
+        # points[pts_instance_idx] = instance
+        results['pts_instance_idx'] = np.arange(len(pts_instance_mask))
         results['pts_mask_fields'].append('pts_instance_mask')
         return results
 
@@ -527,6 +539,9 @@ class LoadAnnotations3D(LoadAnnotations):
                 pts_semantic_mask_path, dtype=pts_dtype)
 
         results['pts_semantic_mask'] = pts_semantic_mask
+        # assuming 1-to-1 correspondance between semantic mask and point cloud
+        # points[pts_semantic_idx] = semantic
+        results['pts_semantic_idx'] = np.arange(len(pts_semantic_mask))
         results['pts_seg_fields'].append('pts_semantic_mask')
         return results
 

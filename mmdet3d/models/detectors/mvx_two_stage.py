@@ -242,6 +242,9 @@ class MVXTwoStageDetector(Base3DDetector):
                       gt_labels_3d=None,
                       gt_labels=None,
                       gt_bboxes=None,
+                      pts_semantic_mask=None,
+                      pts_semantic_idx=None,
+                      pts_instance_mask=None,
                       img=None,
                       proposals=None,
                       gt_bboxes_ignore=None):
@@ -274,8 +277,12 @@ class MVXTwoStageDetector(Base3DDetector):
             points, img=img, img_metas=img_metas)
         losses = dict()
         if pts_feats:
-            losses_pts = self.forward_pts_train(pts_feats, gt_bboxes_3d,
-                                                gt_labels_3d, img_metas,
+            losses_pts = self.forward_pts_train(points, pts_feats,
+                                                gt_bboxes_3d, gt_labels_3d,
+                                                img_metas,
+                                                pts_semantic_mask,
+                                                pts_semantic_idx,
+                                                pts_instance_mask,
                                                 gt_bboxes_ignore)
             losses.update(losses_pts)
         if img_feats:
@@ -290,10 +297,14 @@ class MVXTwoStageDetector(Base3DDetector):
         return losses
 
     def forward_pts_train(self,
+                          points,
                           pts_feats,
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
+                          pts_semantic_mask=None,
+                          pts_semantic_idx=None,
+                          pts_instance_mask=None,
                           gt_bboxes_ignore=None):
         """Forward function for point cloud branch.
 

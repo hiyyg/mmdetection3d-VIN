@@ -1,6 +1,6 @@
 _base_ = [
     '../_base_/datasets/d3d-nuscenes.py',
-    '../_base_/models/centerpoint_01voxel_second_secfpn_nus.py',
+    '../_base_/models/centerpoint_01voxel_second_secfpn_semantic_nus.py',
     '../_base_/schedules/cyclic_20e.py', '../_base_/default_runtime.py'
 ]
 
@@ -37,7 +37,7 @@ db_sampler = dict(
             bicycle=5,
             pedestrian=5)),
     classes=class_names,
-    sample_groups=dict(
+    sample_groups=dict( # TODO: there might be problem with this since d3d has different id order
         car=2,
         truck=3,
         construction_vehicle=7,
@@ -62,17 +62,18 @@ train_pipeline = [
         load_dim=5,
         use_dim=5,
         file_client_args=file_client_args),
+    dict(type='LoadAnnotations3D', # TODO: semantic_idx for testing pipeline
+        with_bbox_3d=True,
+        with_label_3d=True,
+        with_seg_3d='u1'),
+    dict(type='PointSegClassMapping',
+        valid_cat_ids=[1,2,3,4,5,6,7,9,12,13,14,20,21,24,25,26,29],
+        remove_invalid=True),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=3,
         use_dim=5,
         file_client_args=file_client_args),
-    dict(type='LoadAnnotations3D',
-        with_bbox_3d=True,
-        with_label_3d=True,
-        with_seg_3d='u1'),
-        # TODO: append point cloud position to the seg mask?
-        #       or store the index mapping
     dict(type='ObjectSample', db_sampler=db_sampler),
         # TODO: append seg label to sampled points
     dict(
@@ -86,12 +87,13 @@ train_pipeline = [
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
-        # TODO: also filter out the semantic points
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
+    # TODO: add pipeline to reduce semantic lable count
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d',
+        'pts_semantic_mask', 'pts_semantic_idx'])
 ]
 test_pipeline = [
     dict(

@@ -54,7 +54,7 @@ model = dict(
             code_size=9),
         seperate_head=dict(
             type='SeparateHead', init_bias=-2.19, final_kernel=3),
-        semantic_head=dict(
+        semantic_head=dict( # TODO: use focal loss or sqrt loss?
             type='SemanticHead', num_classes=17, point_cloud_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0], in_pts_channels=5),
         loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
         loss_bbox=dict(type='L1Loss', reduction='mean', loss_weight=0.25),

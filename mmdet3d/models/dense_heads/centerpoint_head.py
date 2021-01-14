@@ -703,6 +703,26 @@ class CenterHead(nn.Module):
             loss_dict[f'task{task_id}/loss_bbox'] = loss_bbox
         return loss_dict
 
+    def get_semantic(self, points, preds):
+        results = []
+        pt_counter = 0
+        preds = preds[0].detach().cpu()
+
+        max_result = nn.functional.softmax(preds, dim=1).max(dim=1)
+        semantic_label = max_result.indices
+        semantic_scores = max_result.values
+
+        for cloud in points:
+            range_start = pt_counter
+            range_end = pt_counter + len(cloud)
+            results.append(dict(
+                semantic_label=semantic_label[range_start:range_end],
+                semantic_scores=semantic_scores[range_start:range_end]
+            ))
+            pt_counter = range_end
+
+        return results
+
     def get_bboxes(self, preds_dicts, img_metas, img=None, rescale=False):
         """Generate bboxes from bbox head predictions.
 

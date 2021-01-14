@@ -80,13 +80,22 @@ class CenterPoint(MVXTwoStageDetector):
     def simple_test_pts(self, points, pts_feats, img_metas, rescale=False):
         """Test function of point cloud branch."""
         outs = self.pts_bbox_head(points, pts_feats)
+
+        if hasattr(self.pts_bbox_head, 'get_semantic'):
+            bbox_feat = outs[:-1]
+            semantic_feat = outs[-1]
+            pts_results = self.pts_bbox_head.get_semantic(points, semantic_feat)
+        else:
+            bbox_feat = outs
+            pts_results = [None] * len(img_metas)
+
         bbox_list = self.pts_bbox_head.get_bboxes(
-            outs, img_metas, rescale=rescale)
+            bbox_feat, img_metas, rescale=rescale)
         bbox_results = [
             bbox3d2result(bboxes, scores, labels)
             for bboxes, scores, labels in bbox_list
         ]
-        return bbox_results
+        return bbox_results, pts_results
 
     def aug_test_pts(self, pts_feats, img_metas, rescale=False):
         """Test function of point cloud branch with augmentaiton.

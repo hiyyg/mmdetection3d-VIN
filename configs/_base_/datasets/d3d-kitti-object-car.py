@@ -90,7 +90,7 @@ data = dict(
         pipeline=train_pipeline,
         modality=input_modality,
         test_mode=False,
-        classes=class_names),
+        obj_classes=class_names),
     val=dict(
         type='D3DDataset',
         ds_type=dataset_type,
@@ -100,7 +100,7 @@ data = dict(
         pipeline=test_pipeline,
         modality=input_modality,
         test_mode=True,
-        classes=class_names),
+        obj_classes=class_names),
     test=dict(
         type='D3DDataset',
         ds_type=dataset_type,
@@ -110,7 +110,7 @@ data = dict(
         pipeline=test_pipeline,
         modality=input_modality,
         test_mode=True,
-        classes=class_names)
+        obj_classes=class_names)
 )
 
 evaluation = dict(interval=1)

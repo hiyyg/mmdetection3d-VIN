@@ -135,7 +135,8 @@ class D3DDataset(Custom3DDataset):
 
                  pipeline=None,
                  modality=None,
-                 classes=None,
+                 obj_classes=None,
+                 pts_classes=None, # TODO: add background class
                  filter_empty_gt=True,
                  test_mode=False,
 
@@ -163,17 +164,19 @@ class D3DDataset(Custom3DDataset):
             mmcv.dump(collect_ann_file(self._loader, self.lidar_name), ann_file)
 
         # then call base constructor
-        classes = classes or [c.name for c in ds_type.VALID_OBJ_CLASSES]
+        obj_classes = obj_classes or [c.name for c in ds_type.VALID_OBJ_CLASSES]
         super().__init__(
             data_root=data_root,
             ann_file=ann_file,
             pipeline=pipeline,
-            classes=classes,
+            classes=obj_classes,
             modality=modality,
             box_type_3d='LiDAR',
             filter_empty_gt=filter_empty_gt,
             test_mode=test_mode
         )
+        self.CLASSES_PTS = pts_classes or [c.value for c in ds_type.VALID_PTS_CLASSES]
+        self.CLASSES_PTS = np.array(self.CLASSES_PTS)
 
         # store box dimension in case it's not full
         self._box_dimension = None
@@ -247,16 +250,20 @@ class D3DDataset(Custom3DDataset):
         """
         assert isinstance(outputs, list), 'outputs must be a list (current type: %s)' % str(type(outputs))
 
-        parsed_outputs = []
+        parsed_detections = []
+        parsed_segmentation = []
 
         for idx, result in enumerate(outputs):
             if 'pts_bbox' in result: # this is the case with CenterNet output
-                result = result['pts_bbox']
+                bbox_result = result['pts_bbox']
+            else:
+                bbox_result = result
 
+            # parse object detection result
             detections = Target3DArray(frame=self.data_infos[idx]['anno_frame'])
-            for box, score, label in zip(result['boxes_3d'].tensor.tolist(),
-                                         result['scores_3d'].tolist(),
-                                         result['labels_3d'].tolist()):
+            for box, score, label in zip(bbox_result['boxes_3d'].tensor.tolist(),
+                                         bbox_result['scores_3d'].tolist(),
+                                         bbox_result['labels_3d'].tolist()):
                 position = box[:3]
                 dimension = box[3:6]
 
@@ -267,14 +274,19 @@ class D3DDataset(Custom3DDataset):
 
                 tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
                 detections.append(ObjectTarget3D(position, rotation, dimension, tag)) # TODO: add velocity output
-            parsed_outputs.append(detections)
+            parsed_detections.append(detections)
+
+            # parse segmentation result
+            parsed_segmentation.append(result.get('pts_pointwise'))
 
         if msgfile_prefix is not None:
             mmcv.mkdir_or_exist(msgfile_prefix)
-            with open(osp.join(msgfile_prefix, "results.msg"), "wb") as fout:
-                fout.write(msgpack.packb([arr.serialize() for arr in parsed_outputs], use_single_float=True))
+            with open(osp.join(msgfile_prefix, "detection_results.msg"), "wb") as fout:
+                fout.write(msgpack.packb([arr.serialize()
+                                          for arr in parsed_detections
+                ], use_single_float=True))
 
-        return parsed_outputs
+        return parsed_detections, parsed_segmentation
 
     def evaluate(self,
                  results, 
@@ -283,9 +295,9 @@ class D3DDataset(Custom3DDataset):
         classes = [self._loader.VALID_OBJ_CLASSES[name] for name in self.CLASSES]
         evaluator = DetectionEvaluator(classes, 0.7)
 
-        anno_dt_list = self.format_results(results, msgfile_prefix=msgfile_prefix)
+        anno_dt_list, anno_seg_list = self.format_results(results, msgfile_prefix=msgfile_prefix)
 
-        print_log('Calculating eval metrics', logger=logger)
+        print_log('Calculating eval metrics for object detection', logger=logger)
         for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
             anno_gt = self._loader.annotation_3dobject(info['uidx'])
             calib = self._loader.calibration_data(info['uidx'])
@@ -293,9 +305,23 @@ class D3DDataset(Custom3DDataset):
             stats = evaluator.calc_stats(anno_gt, anno_dt, calib)
             evaluator.add_stats(stats)
 
+        iou_list = [] # TODO: calculate iou for each class
+        print_log('Calculating eval metrics for semantic segmentation', logger=logger)
+        for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
+            anno_seg_dt = self._loader.annotation_3dpoints(info['uidx'])
+            anno_seg = anno_seg_list[i]
+            if anno_seg is not None:
+                anno_seg_id = anno_seg['semantic_label']
+                anno_seg_id = self.CLASSES_PTS[anno_seg_id.numpy()]
+                fp = np.sum(anno_seg_id == anno_seg_dt)
+                iou = fp / (len(anno_seg_dt)*2 - fp)
+                iou_list.append(iou)
+
         results_dict = dict()
         for k, v in evaluator.ap().items():
             results_dict["AP/" + k.name] = v
+        if iou_list:
+            results_dict["mIoU"] = np.mean(iou_list)
         return results_dict
 
     def __str__(self):

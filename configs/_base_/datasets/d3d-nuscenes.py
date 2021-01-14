@@ -20,7 +20,7 @@ file_client_args = dict(backend='disk')
 
 db_sampler = dict(
     data_root=data_root,
-    info_path=data_root + 'nuscenes_dbinfos_train.pkl',
+    info_path=data_root + 'd3d_nuscenes_dbinfos_train.pkl',
     rate=1.0,
     prepare=dict(
         filter_by_difficulty=[-1],
@@ -61,12 +61,12 @@ train_pipeline = [
         load_dim=5,
         use_dim=5,
         file_client_args=file_client_args),
-    # dict(
-    #     type='LoadPointsFromMultiSweeps',
-    #     sweeps_num=10,
-    #     file_client_args=file_client_args),
+    dict(
+        type='LoadPointsFromMultiSweeps',
+        sweeps_num=10,
+        file_client_args=file_client_args),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    # dict(type='ObjectSample', db_sampler=db_sampler),
+    dict(type='ObjectSample', db_sampler=db_sampler),
     dict(
         type='GlobalRotScaleTrans',
         rot_range=[-0.3925, 0.3925],
@@ -87,10 +87,10 @@ test_pipeline = [
         load_dim=5,
         use_dim=5,
         file_client_args=file_client_args),
-    # dict(
-    #     type='LoadPointsFromMultiSweeps',
-    #     sweeps_num=10,
-    #     file_client_args=file_client_args),
+    dict(
+        type='LoadPointsFromMultiSweeps',
+        sweeps_num=10,
+        file_client_args=file_client_args),
     dict(
         type='MultiScaleFlipAug3D',
         img_scale=(1333, 800),
@@ -123,7 +123,7 @@ data = dict(
         ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
         phase='training',
         pipeline=train_pipeline,
-        classes=class_names,
+        obj_classes=class_names,
         modality=input_modality,
         test_mode=False),
     val=dict(
@@ -133,7 +133,7 @@ data = dict(
         ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
         phase='validation',
         pipeline=test_pipeline,
-        classes=class_names,
+        obj_classes=class_names,
         modality=input_modality,
         test_mode=True),
     test=dict(
@@ -143,7 +143,7 @@ data = dict(
         ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
         phase='testing',
         pipeline=test_pipeline,
-        classes=class_names,
+        obj_classes=class_names,
         modality=input_modality,
         test_mode=True))
 # For nuScenes dataset, we usually evaluate the model at the end of training.

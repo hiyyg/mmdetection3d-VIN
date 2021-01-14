@@ -9,6 +9,7 @@ class_names = [
     'car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle',
     'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
 ]
+seg_class_ids = [1,2,3,4,5,6,7,9,12,13,14,20,21,24,25,26,29]
 dataset_type = 'nuscenes'
 data_root = 'data/nuscenes_d3d/'
 input_modality = dict(
@@ -62,12 +63,12 @@ train_pipeline = [
         load_dim=5,
         use_dim=5,
         file_client_args=file_client_args),
-    dict(type='LoadAnnotations3D', # TODO: semantic_idx for testing pipeline
+    dict(type='LoadAnnotations3D',
         with_bbox_3d=True,
         with_label_3d=True,
         with_seg_3d='u1'),
     dict(type='PointSegClassMapping',
-        valid_cat_ids=[1,2,3,4,5,6,7,9,12,13,14,20,21,24,25,26,29],
+        valid_cat_ids=seg_class_ids,
         remove_invalid=True),
     dict(
         type='LoadPointsFromMultiSweeps',
@@ -90,7 +91,6 @@ train_pipeline = [
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
-    # TODO: add pipeline to reduce semantic lable count
     dict(type='DefaultFormatBundle3D', class_names=class_names),
     dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d',
         'pts_semantic_mask', 'pts_semantic_idx'])
@@ -139,7 +139,8 @@ data = dict(
         ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
         phase='training',
         pipeline=train_pipeline,
-        classes=class_names,
+        obj_classes=class_names,
+        pts_classes=seg_class_ids,
         modality=input_modality,
         test_mode=False),
     val=dict(
@@ -149,7 +150,8 @@ data = dict(
         ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
         phase='validation',
         pipeline=test_pipeline,
-        classes=class_names,
+        obj_classes=class_names,
+        pts_classes=seg_class_ids,
         modality=input_modality,
         test_mode=True),
     test=dict(
@@ -159,7 +161,8 @@ data = dict(
         ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
         phase='testing',
         pipeline=test_pipeline,
-        classes=class_names,
+        obj_classes=class_names,
+        pts_classes=seg_class_ids,
         modality=input_modality,
         test_mode=True))
 

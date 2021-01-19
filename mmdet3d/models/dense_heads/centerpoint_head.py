@@ -417,7 +417,7 @@ class CenterHead(nn.Module):
 
         return ret_dicts
 
-    def forward(self, points, feats, pts_semantic_idx=None):
+    def forward(self, points, feats, pts_of_interest_idx=None):
         """Forward pass.
 
         Args:
@@ -428,8 +428,8 @@ class CenterHead(nn.Module):
         Returns:
             tuple(list[dict]): Output results for tasks.
         """
-        if pts_semantic_idx:
-            points = [cloud[idx] for cloud, idx in zip(points, pts_semantic_idx)]
+        if pts_of_interest_idx:
+            points = [cloud[idx] for cloud, idx in zip(points, pts_of_interest_idx)]
 
         pts_repeated = [points] * len(feats)
         results = multi_apply(self.forward_single, pts_repeated, feats)
@@ -703,21 +703,35 @@ class CenterHead(nn.Module):
             loss_dict[f'task{task_id}/loss_bbox'] = loss_bbox
         return loss_dict
 
-    def get_semantic(self, points, preds):
+    def get_semantic(self, points, preds, pts_of_interest_revidx=None):
         results = []
         pt_counter = 0
         preds = preds[0].detach().cpu()
 
         max_result = nn.functional.softmax(preds, dim=1).max(dim=1)
-        semantic_label = max_result.indices
+        semantic_label = max_result.indices.byte() # use uint8 to reduce memory footprint
         semantic_scores = max_result.values
 
-        for cloud in points:
+        for i, cloud in enumerate(points):
             range_start = pt_counter
             range_end = pt_counter + len(cloud)
+            label = semantic_label[range_start:range_end]
+            scores = semantic_scores[range_start:range_end]
+
+            if pts_of_interest_revidx is not None:
+                original_len = len(pts_of_interest_revidx[i])
+                # TODO: use background class as default
+                revarray = torch.zeros(original_len, dtype=label.dtype)
+                revarray[pts_of_interest_revidx[i]] = label
+                label = revarray
+
+                revarray = torch.zeros(original_len, dtype=scores.dtype)
+                revarray[pts_of_interest_revidx[i]] = scores
+                scores = revarray
+
             results.append(dict(
-                semantic_label=semantic_label[range_start:range_end],
-                semantic_scores=semantic_scores[range_start:range_end]
+                semantic_label=label,
+                semantic_scores=scores
             ))
             pt_counter = range_end
 

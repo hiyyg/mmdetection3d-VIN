@@ -176,7 +176,8 @@ class D3DDataset(Custom3DDataset):
             test_mode=test_mode
         )
         self.CLASSES_PTS = pts_classes or [c.value for c in ds_type.VALID_PTS_CLASSES]
-        self.CLASSES_PTS = np.array(self.CLASSES_PTS)
+        assert len(self.CLASSES_PTS) < 255
+        self.CLASSES_PTS = np.array(self.CLASSES_PTS, dtype='u1')
 
         # store box dimension in case it's not full
         self._box_dimension = None
@@ -285,6 +286,8 @@ class D3DDataset(Custom3DDataset):
                 fout.write(msgpack.packb([arr.serialize()
                                           for arr in parsed_detections
                 ], use_single_float=True))
+            if parsed_segmentation[0] is not None:
+                torch.save(parsed_segmentation, osp.join(msgfile_prefix, "segmentation_results.pkl"))
 
         return parsed_detections, parsed_segmentation
 
@@ -311,8 +314,9 @@ class D3DDataset(Custom3DDataset):
             anno_seg_dt = self._loader.annotation_3dpoints(info['uidx'])
             anno_seg = anno_seg_list[i]
             if anno_seg is not None:
-                anno_seg_id = anno_seg['semantic_label']
+                anno_seg_id = anno_seg.pop('semantic_label')
                 anno_seg_id = self.CLASSES_PTS[anno_seg_id.numpy()]
+                assert len(anno_seg_id) == len(anno_seg_dt)
                 fp = np.sum(anno_seg_id == anno_seg_dt)
                 iou = fp / (len(anno_seg_dt)*2 - fp)
                 iou_list.append(iou)

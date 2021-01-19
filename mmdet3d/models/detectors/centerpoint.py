@@ -52,7 +52,7 @@ class CenterPoint(MVXTwoStageDetector):
                           gt_labels_3d,
                           img_metas,
                           pts_semantic_mask=None,
-                          pts_semantic_idx=None,
+                          pts_of_interest_idx=None,
                           pts_instance_mask=None,
                           gt_bboxes_ignore=None):
         """Forward function for point cloud branch.
@@ -70,21 +70,23 @@ class CenterPoint(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self.pts_bbox_head(points, pts_feats, pts_semantic_idx=pts_semantic_idx)
+        outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx)
         losses = self.pts_bbox_head.loss(
             gt_bboxes_3d, gt_labels_3d, outs,
-            pts_semantic_idx=pts_semantic_idx,
+            pts_of_interest_idx=pts_of_interest_idx,
             pts_semantic_mask=pts_semantic_mask)
         return losses
 
-    def simple_test_pts(self, points, pts_feats, img_metas, rescale=False):
+    def simple_test_pts(self, points, pts_feats, img_metas,
+                        rescale=False, pts_of_interest_idx=None,
+                        pts_of_interest_revidx=None):
         """Test function of point cloud branch."""
-        outs = self.pts_bbox_head(points, pts_feats)
+        outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx)
 
         if hasattr(self.pts_bbox_head, 'get_semantic'):
             bbox_feat = outs[:-1]
             semantic_feat = outs[-1]
-            pts_results = self.pts_bbox_head.get_semantic(points, semantic_feat)
+            pts_results = self.pts_bbox_head.get_semantic(points, semantic_feat, pts_of_interest_revidx)
         else:
             bbox_feat = outs
             pts_results = [None] * len(img_metas)

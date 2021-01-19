@@ -10,19 +10,18 @@ from mmdet.datasets.pipelines import RandomFlip
 from ..registry import OBJECTSAMPLERS
 from .data_augment_utils import noise_per_object_v3_, reverse_index
 
-def mask_array_and_index(data_mask, array, index):
+def mask_index(data_mask, index):
     '''
     data_mask: boolean array
     index: long array
-    array: actual data
     '''
-    assert len(index) == len(array)
+    index_len = len(index)
     reverse_idx = reverse_index(index, len(data_mask))
     reverse_idx = reverse_idx[data_mask]
-    index = reverse_index(reverse_idx, len(array))
+    index = reverse_index(reverse_idx, index_len)
 
     array_mask = index != np.sum(data_mask)
-    return array[array_mask], index[array_mask]
+    return index[array_mask], array_mask
 
 @PIPELINES.register_module()
 class RandomFlip3D(RandomFlip):
@@ -202,14 +201,18 @@ class ObjectSample(object):
             clean_points, masks = self.remove_points_in_boxes(points, sampled_gt_bboxes_3d)
             points_combined = points.cat([clean_points, sampled_points])
 
-            if 'pts_semantic_mask' in input_dict:
-                # filter out semantic label for removed points
-                semantic_points = input_dict['pts_semantic_mask']
-                semantic_idx = input_dict['pts_semantic_idx']
+            # update points of interest
+            poi_index = input_dict['pts_of_interest_idx']
+            masked_idx, idx_mask = mask_index(masks, poi_index)
+            input_dict['pts_of_interest_idx'] = masked_idx
 
-                masked_points, masked_idx = mask_array_and_index(masks, semantic_points, semantic_idx)
-                input_dict['pts_semantic_mask'] = masked_points
-                input_dict['pts_semantic_idx'] = masked_idx
+            input_dict['pts_of_interest_revidx'] = \
+                input_dict['pts_of_interest_revidx'][idx_mask]
+
+            # filter out semantic label for removed points
+            if 'pts_semantic_mask' in input_dict:
+                semantic_points = input_dict['pts_semantic_mask']
+                input_dict['pts_semantic_mask'] = semantic_points[idx_mask]
 
             if self.sample_2d:
                 sampled_gt_bboxes_2d = sampled_dict['gt_bboxes_2d']
@@ -463,12 +466,14 @@ class PointShuffle(object):
                 in the result dict.
         """
         perm = input_dict['points'].shuffle()
-        if 'pts_semantic_mask' in input_dict:
-            semantic_idx = input_dict['pts_semantic_idx']
-            reverse_idx = reverse_index(semantic_idx, len(perm))
-            reverse_idx = reverse_idx[perm]
-            input_dict['pts_semantic_idx'] = reverse_index(
-                reverse_idx, len(semantic_idx))
+
+        # filter index of point of interest
+        poi_index = input_dict['pts_of_interest_idx']
+        reverse_idx = reverse_index(poi_index, len(perm))
+        reverse_idx = reverse_idx[perm]
+        input_dict['pts_of_interest_idx'] = reverse_index(
+            reverse_idx, len(poi_index))
+
         return input_dict
 
     def __repr__(self):
@@ -547,15 +552,18 @@ class PointsRangeFilter(object):
         clean_points = points[points_mask]
         input_dict['points'] = clean_points
 
-        if 'pts_semantic_mask' in input_dict:
-            # filter out semantic label for removed points
-            semantic_points = input_dict['pts_semantic_mask']
-            semantic_idx = input_dict['pts_semantic_idx']
+        # update points of interest
+        poi_index = input_dict['pts_of_interest_idx']
+        masked_idx, idx_mask = mask_index(points_mask.numpy(), poi_index)
+        input_dict['pts_of_interest_idx'] = masked_idx
 
-            masked_points, masked_idx = mask_array_and_index(
-                points_mask.numpy(), semantic_points, semantic_idx)
-            input_dict['pts_semantic_mask'] = masked_points
-            input_dict['pts_semantic_idx'] = masked_idx
+        input_dict['pts_of_interest_revidx'] = \
+            input_dict['pts_of_interest_revidx'][idx_mask]
+
+        # filter out semantic label for removed points
+        if 'pts_semantic_mask' in input_dict:
+            semantic_points = input_dict['pts_semantic_mask']
+            input_dict['pts_semantic_mask'] = semantic_points[idx_mask]
 
         return input_dict
 

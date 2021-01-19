@@ -52,7 +52,7 @@ class DefaultFormatBundle(object):
         for key in [
                 'proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels',
                 'gt_labels_3d', 'pts_instance_mask', 'pts_semantic_mask',
-                'pts_semantic_idx'
+                'pts_of_interest_idx'
         ]:
             if key not in results:
                 continue
@@ -213,6 +213,12 @@ class DefaultFormatBundle3D(DefaultFormatBundle):
             if key not in results:
                 continue
             results[key] = DC(to_tensor(results[key]), stack=False)
+
+        # Create reverse index mapping
+        if 'pts_of_interest_revidx' in results:
+            indicator = np.zeros(results['pts_of_interest_count'], dtype=bool)
+            indicator[results['pts_of_interest_revidx']] = True
+            results['pts_of_interest_revidx'] = DC(to_tensor(indicator), stack=False)
 
         if self.with_gt:
             # Clean GT bboxes in the final

@@ -93,7 +93,7 @@ train_pipeline = [
     dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
     dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d',
-        'pts_semantic_mask', 'pts_semantic_idx'])
+        'pts_semantic_mask', 'pts_of_interest_idx'])
 ]
 test_pipeline = [
     dict(
@@ -120,12 +120,15 @@ test_pipeline = [
                 translation_std=[0, 0, 0]),
             dict(type='RandomFlip3D'),
             dict(
+                # This step makes semantic estimation impossible for points out of range
+                # TODO: consider also taking in the whole point cloud and estimate the points
+                #       out of range by the nearest voxel?
                 type='PointsRangeFilter', point_cloud_range=point_cloud_range),
             dict(
                 type='DefaultFormatBundle3D',
                 class_names=class_names,
                 with_label=False),
-            dict(type='Collect3D', keys=['points'])
+            dict(type='Collect3D', keys=['points', 'pts_of_interest_idx', 'pts_of_interest_revidx'])
         ])
 ]
 

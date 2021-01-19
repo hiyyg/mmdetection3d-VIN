@@ -246,11 +246,13 @@ class PointSegClassMapping(object):
         pts_semantic_mask = valid_table[pts_semantic_mask]
 
         if self.remove_invalid:
-            pts_semantic_idx = results['pts_semantic_idx']
+            pts_of_interest_idx = results['pts_of_interest_idx']
             valid_mask = pts_semantic_mask != neg_cls
-            pts_semantic_idx = pts_semantic_idx[valid_mask]
+            pts_of_interest_idx = pts_of_interest_idx[valid_mask]
             pts_semantic_mask = pts_semantic_mask[valid_mask]
-            results['pts_semantic_idx'] = pts_semantic_idx
+            results['pts_of_interest_idx'] = pts_of_interest_idx
+            results['pts_of_interest_revidx'] =\
+                results['pts_of_interest_revidx'][valid_mask]
 
         results['pts_semantic_mask'] = pts_semantic_mask
         return results
@@ -393,6 +395,13 @@ class LoadPointsFromFile(object):
             points, points_dim=points.shape[-1], attribute_dims=attribute_dims)
         results['points'] = points
 
+        # This field is used to specify caculate semantics for which points.
+        # At beginning we assuming 1-to-1 correspondance between semantic
+        # mask and point cloud.
+        results['pts_of_interest_count'] = len(points) # original count
+        results['pts_of_interest_revidx'] = np.arange(len(points))
+        results['pts_of_interest_idx'] = np.arange(len(points))
+
         return results
 
     def __repr__(self):
@@ -506,9 +515,6 @@ class LoadAnnotations3D(LoadAnnotations):
                 pts_instance_mask_path, dtype=np.long)
 
         results['pts_instance_mask'] = pts_instance_mask
-        # assuming 1-to-1 correspondance between instance mask and point cloud
-        # points[pts_instance_idx] = instance
-        results['pts_instance_idx'] = np.arange(len(pts_instance_mask))
         results['pts_mask_fields'].append('pts_instance_mask')
         return results
 
@@ -539,9 +545,6 @@ class LoadAnnotations3D(LoadAnnotations):
                 pts_semantic_mask_path, dtype=pts_dtype)
 
         results['pts_semantic_mask'] = pts_semantic_mask
-        # assuming 1-to-1 correspondance between semantic mask and point cloud
-        # points[pts_semantic_idx] = semantic
-        results['pts_semantic_idx'] = np.arange(len(pts_semantic_mask))
         results['pts_seg_fields'].append('pts_semantic_mask')
         return results
 

@@ -1,7 +1,7 @@
 import copy
 import numpy as np
 import torch
-from mmcv.cnn import ConvModule, build_conv_layer, kaiming_init
+from mmcv.cnn import ConvModule, build_conv_layer, kaiming_init, build_norm_layer
 from mmcv.runner import force_fp32
 from torch import nn
 
@@ -25,15 +25,21 @@ class SemanticHead(nn.Module):
                  in_pts_channels=3,
                  mlp_layer_nums=3,
                  mlp_channels=256,
-                 conv_cfg=dict(type='Conv2d'),
-                 norm_cfg=dict(type='BN2d'),
-                 bias='auto',
+                 norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01),
                  **kwargs):
         super(SemanticHead, self).__init__()
 
-        mlps = [nn.Linear(in_feat_channels + in_pts_channels, mlp_channels)]
+        _, norm_layer = build_norm_layer(norm_cfg, mlp_channels)
+        mlps = [
+            nn.Linear(in_feat_channels + in_pts_channels, mlp_channels, bias=False),
+            norm_layer,
+            nn.ReLU(inplace=True)
+        ]
         for _ in range(mlp_layer_nums - 1):
+            _, norm_layer = build_norm_layer(norm_cfg, mlp_channels)
             mlps.append(nn.Linear(mlp_channels, mlp_channels))
+            mlps.append(norm_layer)
+            mlps.append(nn.ReLU(inplace=True))
         mlps.append(nn.Linear(mlp_channels, num_classes))
         self.point_mlps = nn.Sequential(*mlps)
 
@@ -41,7 +47,8 @@ class SemanticHead(nn.Module):
 
     def init_weights(self):
         for linear in self.point_mlps:
-            kaiming_init(linear)
+            if isinstance(linear, nn.Linear):
+                kaiming_init(linear)
 
     def forward(self, pts, pts_feature):
         """
@@ -49,7 +56,7 @@ class SemanticHead(nn.Module):
             pts_feature (torch.float32): Features from voxel in shape (N, C, H, W).
                 H for y and W for x.
         """
-        # TODO: add convs for pts_feature
+        # TODO(zyxin): consider adding convs for pts_feature
 
         # calculate point positions
         D = 1
@@ -334,7 +341,7 @@ class CenterHead(nn.Module):
                  loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
                  loss_bbox=dict(
                      type='L1Loss', reduction='none', loss_weight=0.25),
-                 loss_semantic=dict(type="CrossEntropyLoss", reduction='mean'),
+                 loss_semantic=dict(type="FocalLoss", use_sigmoid=True, reduction='mean'),
                  seperate_head=dict(
                      type='SeparateHead', init_bias=-2.19, final_kernel=3),
                  semantic_head=None,
@@ -662,9 +669,10 @@ class CenterHead(nn.Module):
 
             # semantic loss
             semantic_label = torch.cat(pts_semantic_mask).long()
-            semantic_label = semantic_label.clamp(max=9) # TODO: for DEBUG
-            loss_dict[f'loss_semantics'] = self.loss_semantic(
-                semantic_preds[0], semantic_label)
+            semantic_loss = self.loss_semantic(semantic_preds[0],
+                                               semantic_label)
+            semantic_loss = semantic_loss.sqrt() # TODO(zyxin): this is used since semantic loss is too small
+            loss_dict[f'loss_semantics'] = semantic_loss
         else:
             task_preds = preds_dicts
 
@@ -708,8 +716,8 @@ class CenterHead(nn.Module):
         pt_counter = 0
         preds = preds[0].detach().cpu()
 
-        max_result = nn.functional.softmax(preds, dim=1).max(dim=1)
-        semantic_label = max_result.indices.byte() # use uint8 to reduce memory footprint
+        max_result = preds.sigmoid().max(dim=1)
+        semantic_label = max_result.indices.char() # use int8 to reduce memory footprint
         semantic_scores = max_result.values
 
         for i, cloud in enumerate(points):
@@ -720,8 +728,9 @@ class CenterHead(nn.Module):
 
             if pts_of_interest_revidx is not None:
                 original_len = len(pts_of_interest_revidx[i])
-                # TODO: use background class as default
-                revarray = torch.zeros(original_len, dtype=label.dtype)
+
+                # use the last label as default (background label if not removed)
+                revarray = torch.full((original_len,), -1, dtype=label.dtype)
                 revarray[pts_of_interest_revidx[i]] = label
                 label = revarray
 

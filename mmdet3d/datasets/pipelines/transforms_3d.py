@@ -453,7 +453,7 @@ class GlobalRotScaleTrans(object):
 @PIPELINES.register_module()
 class PointShuffle(object):
     """Shuffle input points."""
-    # TODO: Improve PointShuffle to PointSamplers
+    # TODO(zyxin): Improve PointShuffle to PointSamplers
 
     def __call__(self, input_dict):
         """Call function to shuffle points.

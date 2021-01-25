@@ -1,6 +1,6 @@
 _base_ = [
     '../_base_/datasets/d3d-nuscenes.py',
-    '../_base_/models/centerpoint_01voxel_second_secfpn_semantic_nus.py',
+    '../_base_/models/centerpoint_01voxel_second_secfpn_nus.py',
     '../_base_/schedules/cyclic_20e.py', '../_base_/default_runtime.py'
 ]
 
@@ -9,7 +9,7 @@ class_names = [
     'car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle',
     'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
 ]
-seg_class_ids = [1,2,3,4,5,6,7,9,12,13,14,20,21,24,25,26,29]
+seg_class_ids = [1,2,3,4,9,12,14,15,16,17,21,22,23,24,25,26,27,28,30]
 dataset_type = 'nuscenes'
 data_root = 'data/nuscenes_d3d/'
 input_modality = dict(
@@ -38,7 +38,7 @@ db_sampler = dict(
             bicycle=5,
             pedestrian=5)),
     classes=class_names,
-    sample_groups=dict( # TODO: there might be problem with this since d3d has different id order
+    sample_groups=dict( # TODO(zyxin): there might be problem with this since d3d has different id order
         car=2,
         truck=3,
         construction_vehicle=7,
@@ -69,14 +69,15 @@ train_pipeline = [
         with_seg_3d='u1'),
     dict(type='PointSegClassMapping',
         valid_cat_ids=seg_class_ids,
-        remove_invalid=True),
+        remove_invalid=False),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=3,
+        sweeps_num=3, # TODO(zyxin): add randomness here
         use_dim=5,
+        remove_close=True,
         file_client_args=file_client_args),
     dict(type='ObjectSample', db_sampler=db_sampler),
-        # TODO: append seg label to sampled points
+        # TODO(zyxin): append seg label to sampled points
     dict(
         type='GlobalRotScaleTrans',
         rot_range=[-0.3925, 0.3925],
@@ -121,8 +122,8 @@ test_pipeline = [
             dict(type='RandomFlip3D'),
             dict(
                 # This step makes semantic estimation impossible for points out of range
-                # TODO: consider also taking in the whole point cloud and estimate the points
-                #       out of range by the nearest voxel?
+                # TODO(zyxin): consider also taking in the whole point cloud and estimate the points
+                #              out of range by the nearest voxel?
                 type='PointsRangeFilter', point_cloud_range=point_cloud_range),
             dict(
                 type='DefaultFormatBundle3D',
@@ -131,6 +132,19 @@ test_pipeline = [
             dict(type='Collect3D', keys=['points', 'pts_of_interest_idx', 'pts_of_interest_revidx'])
         ])
 ]
+
+model = dict(
+    pts_voxel_layer=dict(point_cloud_range=point_cloud_range),
+    pts_bbox_head=dict(
+        bbox_coder=dict(pc_range=point_cloud_range[:2]),
+        semantic_head=dict(
+            type='SemanticHead',
+            num_classes=len(seg_class_ids)+1,
+            point_cloud_range=point_cloud_range,
+            in_pts_channels=5),
+        loss_semantic=dict(
+            type="FocalLoss", use_sigmoid=True,
+            reduction='mean', loss_weight=2)))
 
 data = dict(
     samples_per_gpu=4,
@@ -169,11 +183,10 @@ data = dict(
         modality=input_modality,
         test_mode=True))
 
-model = dict(
-    pts_voxel_layer=dict(point_cloud_range=point_cloud_range),
-    pts_bbox_head=dict(bbox_coder=dict(pc_range=point_cloud_range[:2])))
 # model training and testing settings
 train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
-evaluation = dict(interval=1, msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')
+# XXX(zyxin): temporary settings
+evaluation = dict(interval=15, msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')
+total_epochs = 30

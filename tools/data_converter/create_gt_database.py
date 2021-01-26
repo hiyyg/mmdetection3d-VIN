@@ -9,6 +9,7 @@ from pycocotools.coco import COCO
 
 from mmdet3d.core.bbox import box_np_ops as box_np_ops
 from mmdet3d.datasets import build_dataset
+from mmdet3d.datasets.pipelines.data_augment_utils import reverse_index
 from mmdet.core.evaluation.bbox_overlaps import bbox_overlaps
 
 
@@ -114,7 +115,8 @@ def create_groundtruth_database(dataset_class,
                                 database_save_path=None,
                                 db_info_save_path=None,
                                 relative_path=True,
-                                with_mask=False):
+                                with_mask=False,
+                                with_mask_3d=False):
     """Given the raw data, generate the ground truth database.
 
     Args:
@@ -136,6 +138,8 @@ def create_groundtruth_database(dataset_class,
             Default: True.
         with_mask (bool): Whether to use mask.
             Default: False.
+        with_mask_3d (bool): Whether to use 3d mask.
+            Defaukt: False
     """
     if isinstance(dataset_class, str):
         print(f'Create GT Database of {dataset_class}')
@@ -286,6 +290,9 @@ def create_groundtruth_database(dataset_class,
                 gt_boxes, gt_masks, mask_inds, annos['img'])
 
         for i in range(num_obj):
+            if (used_classes is not None) and (names[i] not in used_classes):
+                continue
+
             filename = f'{image_idx}_{names[i]}_{i}.bin'
             abs_filepath = osp.join(database_save_path, filename)
             rel_filepath = osp.join(f'{info_prefix}_gt_database', filename)
@@ -293,6 +300,9 @@ def create_groundtruth_database(dataset_class,
             # save point clouds and image patches for each object
             gt_points = points[point_indices[:, i]]
             gt_points[:, :3] -= gt_boxes_3d[i, :3]
+
+            with open(abs_filepath, 'w') as f:
+                gt_points.tofile(f)
 
             if with_mask:
                 if object_masks[i].sum() == 0 or not valid_inds[i]:
@@ -303,33 +313,43 @@ def create_groundtruth_database(dataset_class,
                 mmcv.imwrite(object_img_patches[i], img_patch_path)
                 mmcv.imwrite(object_masks[i], mask_patch_path)
 
-            with open(abs_filepath, 'w') as f:
-                gt_points.tofile(f)
+            if with_mask_3d and 'pts_semantic_mask' in example:
+                poi_idx = example['pts_of_interest_idx']
+                semantic_points = example['pts_semantic_mask'][point_indices[poi_idx, i]]
+                with open(osp.join(database_save_path, filename + '.sem'), 'w') as f:
+                    semantic_points.tofile(f)
 
-            if (used_classes is None) or names[i] in used_classes:
-                db_info = {
-                    'name': names[i],
-                    'path': rel_filepath,
-                    'image_idx': image_idx,
-                    'gt_idx': i,
-                    'box3d_lidar': gt_boxes_3d[i],
-                    'num_points_in_gt': gt_points.shape[0],
-                    'difficulty': difficulty[i],
-                }
-                local_group_id = group_ids[i]
-                # if local_group_id >= 0:
-                if local_group_id not in group_dict:
-                    group_dict[local_group_id] = group_counter
-                    group_counter += 1
-                db_info['group_id'] = group_dict[local_group_id]
-                if 'score' in annos:
-                    db_info['score'] = annos['score'][i]
-                if with_mask:
-                    db_info.update({'box2d_camera': gt_boxes[i]})
-                if names[i] in all_db_infos:
-                    all_db_infos[names[i]].append(db_info)
-                else:
-                    all_db_infos[names[i]] = [db_info]
+                sample_poi = np.zeros(len(points), dtype=bool)
+                sample_poi[poi_idx] = True
+                sample_poi, = np.where(sample_poi[point_indices[:, i]])
+                # TODO(zyxin): convert sample_poi to int32 to save space
+                with open(osp.join(database_save_path, filename + '.poi'), 'w') as f:
+                    sample_poi.tofile(f)
+                assert len(gt_points[sample_poi]) == len(semantic_points)
+
+            db_info = {
+                'name': names[i],
+                'path': rel_filepath,
+                'image_idx': image_idx,
+                'gt_idx': i,
+                'box3d_lidar': gt_boxes_3d[i],
+                'num_points_in_gt': gt_points.shape[0],
+                'difficulty': difficulty[i],
+            }
+            local_group_id = group_ids[i]
+            # if local_group_id >= 0:
+            if local_group_id not in group_dict:
+                group_dict[local_group_id] = group_counter
+                group_counter += 1
+            db_info['group_id'] = group_dict[local_group_id]
+            if 'score' in annos:
+                db_info['score'] = annos['score'][i]
+            if with_mask:
+                db_info.update({'box2d_camera': gt_boxes[i]})
+            if names[i] in all_db_infos:
+                all_db_infos[names[i]].append(db_info)
+            else:
+                all_db_infos[names[i]] = [db_info]
 
     for k, v in all_db_infos.items():
         print(f'load {len(v)} {k} database infos')

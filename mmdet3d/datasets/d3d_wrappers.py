@@ -8,6 +8,7 @@ import numpy as np
 import os.path as osp
 import torch
 import tqdm
+import pickle
 from d3d.abstraction import ObjectTag, ObjectTarget3D, Target3DArray, EgoPose
 from d3d.benchmarks import DetectionEvaluator
 from d3d.box import crop_3dr
@@ -136,7 +137,7 @@ class D3DDataset(Custom3DDataset):
                  pipeline=None,
                  modality=None,
                  obj_classes=None,
-                 pts_classes=None, # TODO: add background class
+                 pts_classes=None,
                  filter_empty_gt=True,
                  test_mode=False,
 
@@ -177,7 +178,8 @@ class D3DDataset(Custom3DDataset):
         )
         self.CLASSES_PTS = pts_classes or [c.value for c in ds_type.VALID_PTS_CLASSES]
         assert len(self.CLASSES_PTS) < 255
-        self.CLASSES_PTS = np.array(self.CLASSES_PTS, dtype='u1')
+        # use 0 as background and unknown class
+        self.CLASSES_PTS = np.array(self.CLASSES_PTS + [0], dtype='u1')
 
         # store box dimension in case it's not full
         self._box_dimension = None
@@ -235,7 +237,8 @@ class D3DDataset(Custom3DDataset):
             # add semantic points if available
             if hasattr(self._loader, "annotation_3dpoints"):
                 with self._loader.return_path():
-                    semantic_path = self._loader.annotation_3dpoints(sample_idx, names=self.lidar_name)
+                    semantic_path = self._loader.annotation_3dpoints(
+                        sample_idx, names=self.lidar_name)['semantic']
                 input_dict['ann_info']['pts_semantic_mask_path'] = semantic_path
 
         # mmcv.dump(input_dict, f"./.dev_scripts/temp_d3d/%s_nus.pkl" % (sample_idx[0] + '-' + str(sample_idx[1])))
@@ -256,7 +259,7 @@ class D3DDataset(Custom3DDataset):
 
         for idx, result in enumerate(outputs):
             if 'pts_bbox' in result: # this is the case with CenterNet output
-                bbox_result = result['pts_bbox']
+                bbox_result = result.pop('pts_bbox')
             else:
                 bbox_result = result
 
@@ -274,11 +277,18 @@ class D3DDataset(Custom3DDataset):
                 rotation = Rotation.from_euler("Z", box[6] - np.pi / 2)
 
                 tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
-                detections.append(ObjectTarget3D(position, rotation, dimension, tag)) # TODO: add velocity output
+                detections.append(ObjectTarget3D(position, rotation, dimension, tag)) # TODO(zyxin): add velocity output
             parsed_detections.append(detections)
 
             # parse segmentation result
-            parsed_segmentation.append(result.get('pts_pointwise'))
+            if 'pts_pointwise' in result:
+                semantic_result = result.pop('pts_pointwise')
+                scores = semantic_result.pop('semantic_scores').numpy()
+                label = semantic_result.pop('semantic_label').numpy()
+                label = self.CLASSES_PTS[label]
+                parsed_segmentation.append(dict(semantic_scores=scores, semantic_label=label))
+            else:
+                parsed_segmentation.append(None)
 
         if msgfile_prefix is not None:
             mmcv.mkdir_or_exist(msgfile_prefix)
@@ -287,7 +297,8 @@ class D3DDataset(Custom3DDataset):
                                           for arr in parsed_detections
                 ], use_single_float=True))
             if parsed_segmentation[0] is not None:
-                torch.save(parsed_segmentation, osp.join(msgfile_prefix, "segmentation_results.pkl"))
+                with open(osp.join(msgfile_prefix, "segmentation_results.pkl"), "wb") as fout:
+                    pickle.dump(parsed_segmentation, fout)
 
         return parsed_detections, parsed_segmentation
 
@@ -308,17 +319,25 @@ class D3DDataset(Custom3DDataset):
             stats = evaluator.calc_stats(anno_gt, anno_dt, calib)
             evaluator.add_stats(stats)
 
-        iou_list = [] # TODO: calculate iou for each class
+        iou_list = [] # TODO(zyxin): calculate iou for each class
+        valid_ids = np.zeros(128, dtype=bool) # 128 labels at most
+        for id in self.CLASSES_PTS:
+            valid_ids[id] = True
+
         print_log('Calculating eval metrics for semantic segmentation', logger=logger)
         for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-            anno_seg_dt = self._loader.annotation_3dpoints(info['uidx'])
-            anno_seg = anno_seg_list[i]
+            anno_seg = anno_seg_list[i] # estimated
             if anno_seg is not None:
+                anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'])['semantic']
                 anno_seg_id = anno_seg.pop('semantic_label')
-                anno_seg_id = self.CLASSES_PTS[anno_seg_id.numpy()]
-                assert len(anno_seg_id) == len(anno_seg_dt)
-                fp = np.sum(anno_seg_id == anno_seg_dt)
-                iou = fp / (len(anno_seg_dt)*2 - fp)
+                assert len(anno_seg_id) == len(anno_seg_gt)
+
+                # only evaluate trained id
+                valid_mask = valid_ids[anno_seg_gt]
+                anno_seg_gt = anno_seg_gt[valid_mask]
+                anno_seg_id = anno_seg_id[valid_mask]
+                tp = np.sum(anno_seg_id == anno_seg_gt)
+                iou = tp / (len(anno_seg_gt)*2 - tp)
                 iou_list.append(iou)
 
         results_dict = dict()
@@ -346,13 +365,13 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
 
     # Creating info for training set
     train_loader = ds_type(root_path, inzip=inzip, phase="training",
-        trainval_split=trainval_split, trainval_random=seed)
+        trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     traininfo_path = info_path = Path(root_path, f'{info_prefix}_infos_train.pkl')
     mmcv.dump(collect_ann_file(train_loader, lidar_name, debug=debug), info_path)
 
     # Creating info to validation set
     val_loader = ds_type(root_path, inzip=inzip, phase="validation",
-        trainval_split=trainval_split, trainval_random=seed)
+        trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     info_path = Path(root_path, f'{info_prefix}_infos_val.pkl')
     mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug), info_path)
 
@@ -393,7 +412,7 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                 file_client_args=file_client_args),
             dict(
                 type='LoadPointsFromMultiSweeps',
-                sweeps_num=3,
+                sweeps_num=6,
                 use_dim=5,
                 pad_empty_sweeps=False,
                 remove_close=True,
@@ -401,7 +420,8 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
             dict(
                 type='LoadAnnotations3D',
                 with_bbox_3d=True,
-                with_label_3d=True)
+                with_label_3d=True,
+                with_seg_3d='u1')
         ]
     elif ds_name == 'waymo':
         pipeline = [
@@ -416,12 +436,14 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                 with_bbox_3d=True,
                 with_label_3d=True)
         ]
+    else:
+        raise NotImplementedError("Dataset not supported")
 
     dataset = D3DDataset(ds_name, root_path, traininfo_path, inzip=inzip,
                          trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline)
     create_groundtruth_database(dataset, root_path, info_prefix,
                                 database_save_path=database_save_path,
-                                db_info_save_path=db_info_save_path)
+                                db_info_save_path=db_info_save_path, with_mask_3d=True)
 
 if __name__ == "__main__":
-    d3d_data_prep("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes")
+    d3d_data_prep("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95)

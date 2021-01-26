@@ -251,8 +251,10 @@ class PointSegClassMapping(object):
             pts_of_interest_idx = pts_of_interest_idx[valid_mask]
             pts_semantic_mask = pts_semantic_mask[valid_mask]
             results['pts_of_interest_idx'] = pts_of_interest_idx
-            results['pts_of_interest_revidx'] =\
-                results['pts_of_interest_revidx'][valid_mask]
+
+            if 'pts_of_interest_revidx' in results:
+                results['pts_of_interest_revidx'] =\
+                    results['pts_of_interest_revidx'][valid_mask]
 
         results['pts_semantic_mask'] = pts_semantic_mask
         return results
@@ -395,10 +397,13 @@ class LoadPointsFromFile(object):
             points, points_dim=points.shape[-1], attribute_dims=attribute_dims)
         results['points'] = points
 
-        # This field is used to specify caculate semantics for which points.
+        results['pts_of_interest_count'] = len(points) # original count
+        # This field is used to specify the semantics for which points.
         # At beginning we assuming 1-to-1 correspondance between semantic
         # mask and point cloud.
-        results['pts_of_interest_count'] = len(points) # original count
+        # e.g.:
+        #   processed_points[pts_of_interest_idx] = pts_semantic_mask
+        #   original_points[pts_of_interest_revidx] = pts_semantic_mask
         results['pts_of_interest_revidx'] = np.arange(len(points))
         results['pts_of_interest_idx'] = np.arange(len(points))
 

@@ -135,11 +135,14 @@ class ObjectSample(object):
             Defaults to False.
     """
 
-    def __init__(self, db_sampler, sample_2d=False):
+    def __init__(self, db_sampler, sample_2d=False, sample_semantics=False):
         self.sampler_cfg = db_sampler
         self.sample_2d = sample_2d
+        self.sample_semantics = sample_semantics
         if 'type' not in db_sampler.keys():
             db_sampler['type'] = 'DataBaseSampler'
+        if 'load_semantics' not in db_sampler.keys():
+            db_sampler['load_semantics'] = sample_semantics
         self.db_sampler = build_from_cfg(db_sampler, OBJECTSAMPLERS)
 
     @staticmethod
@@ -174,6 +177,7 @@ class ObjectSample(object):
 
         # change to float for blending operation
         points = input_dict['points']
+        points_combined = points # remained the same if not sampled
         if self.sample_2d:
             img = input_dict['img']
             gt_bboxes_2d = input_dict['gt_bboxes']
@@ -206,8 +210,9 @@ class ObjectSample(object):
             masked_idx, idx_mask = mask_index(masks, poi_index)
             input_dict['pts_of_interest_idx'] = masked_idx
 
-            input_dict['pts_of_interest_revidx'] = \
-                input_dict['pts_of_interest_revidx'][idx_mask]
+            if 'pts_of_interest_revidx' in input_dict:
+                input_dict['pts_of_interest_revidx'] = \
+                    input_dict['pts_of_interest_revidx'][idx_mask]
 
             # filter out semantic label for removed points
             if 'pts_semantic_mask' in input_dict:
@@ -221,6 +226,22 @@ class ObjectSample(object):
 
                 input_dict['gt_bboxes'] = gt_bboxes_2d
                 input_dict['img'] = sampled_dict['img']
+
+            if self.sample_semantics:
+                sampled_semantics = sampled_dict['pts_semantic_mask']
+                poi_idx = sampled_dict['pts_of_interest_idx']
+                input_dict['pts_semantic_mask'] = np.concatenate(
+                    [input_dict['pts_semantic_mask'], sampled_semantics])
+
+                input_dict['pts_of_interest_idx'] = np.concatenate([
+                    input_dict['pts_of_interest_idx'],
+                    poi_idx + len(clean_points)
+                ])
+
+                # pts_of_interest_revidx is removed here since it's meant for test phase.
+                # There is no way to create reverse mapping when additional semantic labels are added
+                if 'pts_of_interest_revidx' in input_dict:
+                    input_dict.pop('pts_of_interest_revidx')
 
         input_dict['gt_bboxes_3d'] = gt_bboxes_3d
         input_dict['gt_labels_3d'] = gt_labels_3d.astype(np.long)
@@ -557,8 +578,9 @@ class PointsRangeFilter(object):
         masked_idx, idx_mask = mask_index(points_mask.numpy(), poi_index)
         input_dict['pts_of_interest_idx'] = masked_idx
 
-        input_dict['pts_of_interest_revidx'] = \
-            input_dict['pts_of_interest_revidx'][idx_mask]
+        if 'pts_of_interest_revidx' in input_dict:
+            input_dict['pts_of_interest_revidx'] = \
+                input_dict['pts_of_interest_revidx'][idx_mask]
 
         # filter out semantic label for removed points
         if 'pts_semantic_mask' in input_dict:

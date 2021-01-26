@@ -102,7 +102,8 @@ class DataBaseSampler(object):
                      type='LoadPointsFromFile',
                      coord_type='LIDAR',
                      load_dim=4,
-                     use_dim=[0, 1, 2, 3])):
+                     use_dim=[0, 1, 2, 3]),
+                 load_semantics=False):
         super().__init__()
         self.data_root = data_root
         self.info_path = info_path
@@ -112,6 +113,7 @@ class DataBaseSampler(object):
         self.cat2label = {name: i for i, name in enumerate(classes)}
         self.label2cat = {i: name for i, name in enumerate(classes)}
         self.points_loader = mmcv.build_from_cfg(points_loader, PIPELINES)
+        self.load_semantics = load_semantics
 
         db_infos = mmcv.load(info_path)
 
@@ -247,6 +249,8 @@ class DataBaseSampler(object):
 
             # num_sampled = len(sampled)
             s_points_list = []
+            s_semantics_list = []
+            s_poi_idx_list = []
             count = 0
             for info in sampled:
                 file_path = os.path.join(
@@ -256,23 +260,28 @@ class DataBaseSampler(object):
                 s_points = self.points_loader(results)['points']
                 s_points.translate(info['box3d_lidar'][:3])
 
-                count += 1
+                if self.load_semantics:
+                    sempath = file_path + '.sem'
+                    s_semantics_list.append(np.fromfile(sempath, dtype='u1'))
+                    poipath = file_path + '.poi'
+                    s_poi_idx_list.append(np.fromfile(poipath, dtype='i8'))
 
+                count += 1
                 s_points_list.append(s_points)
 
             gt_labels = np.array([self.cat2label[s['name']] for s in sampled],
                                  dtype=np.long)
             ret = {
-                'gt_labels_3d':
-                gt_labels,
-                'gt_bboxes_3d':
-                sampled_gt_bboxes,
-                'points':
-                s_points_list[0].cat(s_points_list),
-                'group_ids':
-                np.arange(gt_bboxes.shape[0],
-                          gt_bboxes.shape[0] + len(sampled))
+                'gt_labels_3d': gt_labels,
+                'gt_bboxes_3d': sampled_gt_bboxes,
+                'points': s_points_list[0].cat(s_points_list),
+                'group_ids': np.arange(gt_bboxes.shape[0],
+                                       gt_bboxes.shape[0] + len(sampled))
             }
+
+            if self.load_semantics:
+                ret['pts_semantic_mask'] = np.concatenate(s_semantics_list)
+                ret['pts_of_interest_idx'] = np.concatenate(s_poi_idx_list)
 
         return ret
 

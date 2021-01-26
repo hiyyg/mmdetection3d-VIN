@@ -67,17 +67,16 @@ train_pipeline = [
         with_bbox_3d=True,
         with_label_3d=True,
         with_seg_3d='u1'),
-    dict(type='PointSegClassMapping',
-        valid_cat_ids=seg_class_ids,
-        remove_invalid=False),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=3, # TODO(zyxin): add randomness here
+        sweeps_num=4, # TODO(zyxin): dynamic number of sweeps
         use_dim=5,
         remove_close=True,
         file_client_args=file_client_args),
-    dict(type='ObjectSample', db_sampler=db_sampler),
-        # TODO(zyxin): append seg label to sampled points
+    dict(type='ObjectSample', db_sampler=db_sampler, sample_semantics=True),
+    dict(type='PointSegClassMapping',
+        valid_cat_ids=seg_class_ids,
+        remove_invalid=False),
     dict(
         type='GlobalRotScaleTrans',
         rot_range=[-0.3925, 0.3925],
@@ -105,7 +104,7 @@ test_pipeline = [
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=3,
+        sweeps_num=4,
         use_dim=5,
         file_client_args=file_client_args),
     dict(
@@ -188,5 +187,5 @@ train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
 # XXX(zyxin): temporary settings
-evaluation = dict(interval=15, msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')
+evaluation = dict(interval=1, msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')
 total_epochs = 30

@@ -83,7 +83,7 @@ class CenterPoint(MVXTwoStageDetector):
         """Test function of point cloud branch."""
         outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx)
 
-        if hasattr(self.pts_bbox_head, 'get_semantic'):
+        if getattr(self.pts_bbox_head, 'semantic_head', None) is not None:
             bbox_feat = outs[:-1]
             semantic_feat = outs[-1]
             pts_results = self.pts_bbox_head.get_semantic(points, semantic_feat, pts_of_interest_revidx)

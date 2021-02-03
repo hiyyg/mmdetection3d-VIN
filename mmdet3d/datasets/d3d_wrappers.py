@@ -176,7 +176,7 @@ class D3DDataset(Custom3DDataset):
             filter_empty_gt=filter_empty_gt,
             test_mode=test_mode
         )
-        self.CLASSES_PTS = pts_classes or [c.value for c in ds_type.VALID_PTS_CLASSES]
+        self.CLASSES_PTS = pts_classes or []
         assert len(self.CLASSES_PTS) < 255
         # use 0 as background and unknown class
         self.CLASSES_PTS = np.array(self.CLASSES_PTS + [0], dtype='u1')
@@ -281,7 +281,7 @@ class D3DDataset(Custom3DDataset):
             parsed_detections.append(detections)
 
             # parse segmentation result
-            if 'pts_pointwise' in result:
+            if result.get('pts_pointwise', None) is not None:
                 semantic_result = result.pop('pts_pointwise')
                 scores = semantic_result.pop('semantic_scores').numpy()
                 label = semantic_result.pop('semantic_label').numpy()
@@ -388,62 +388,63 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
         return
 
     # set up pipelines
-    file_client_args = dict(backend='disk')
-    if ds_name == 'kitti':
-        pipeline = [
-            dict(
-                type='LoadPointsFromFile',
-                coord_type='LIDAR',
-                load_dim=4,
-                use_dim=4,
-                file_client_args=file_client_args),
-            dict(
-                type='LoadAnnotations3D',
-                with_bbox_3d=True,
-                with_label_3d=True)
-        ]
-    elif ds_name == 'nuscenes':
-        pipeline = [
-            dict(
-                type='LoadPointsFromFile',
-                coord_type='LIDAR',
-                load_dim=5,
-                use_dim=5,
-                file_client_args=file_client_args),
-            dict(
-                type='LoadPointsFromMultiSweeps',
-                sweeps_num=6,
-                use_dim=5,
-                pad_empty_sweeps=False,
-                remove_close=True,
-                file_client_args=file_client_args),
-            dict(
-                type='LoadAnnotations3D',
-                with_bbox_3d=True,
-                with_label_3d=True,
-                with_seg_3d='u1')
-        ]
-    elif ds_name == 'waymo':
-        pipeline = [
-            dict(
-                type='LoadPointsFromFile',
-                coord_type='LIDAR',
-                load_dim=6,
-                use_dim=5,
-                file_client_args=file_client_args),
-            dict(
-                type='LoadAnnotations3D',
-                with_bbox_3d=True,
-                with_label_3d=True)
-        ]
-    else:
-        raise NotImplementedError("Dataset not supported")
+    if not debug:
+        file_client_args = dict(backend='disk')
+        if ds_name == 'kitti':
+            pipeline = [
+                dict(
+                    type='LoadPointsFromFile',
+                    coord_type='LIDAR',
+                    load_dim=4,
+                    use_dim=4,
+                    file_client_args=file_client_args),
+                dict(
+                    type='LoadAnnotations3D',
+                    with_bbox_3d=True,
+                    with_label_3d=True)
+            ]
+        elif ds_name == 'nuscenes':
+            pipeline = [
+                dict(
+                    type='LoadPointsFromFile',
+                    coord_type='LIDAR',
+                    load_dim=5,
+                    use_dim=5,
+                    file_client_args=file_client_args),
+                dict(
+                    type='LoadPointsFromMultiSweeps',
+                    sweeps_num=6,
+                    use_dim=5,
+                    pad_empty_sweeps=False,
+                    remove_close=True,
+                    file_client_args=file_client_args),
+                dict(
+                    type='LoadAnnotations3D',
+                    with_bbox_3d=True,
+                    with_label_3d=True,
+                    with_seg_3d='u1')
+            ]
+        elif ds_name == 'waymo':
+            pipeline = [
+                dict(
+                    type='LoadPointsFromFile',
+                    coord_type='LIDAR',
+                    load_dim=6,
+                    use_dim=5,
+                    file_client_args=file_client_args),
+                dict(
+                    type='LoadAnnotations3D',
+                    with_bbox_3d=True,
+                    with_label_3d=True)
+            ]
+        else:
+            raise NotImplementedError("Dataset not supported")
 
-    dataset = D3DDataset(ds_name, root_path, traininfo_path, inzip=inzip,
-                         trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline)
-    create_groundtruth_database(dataset, root_path, info_prefix,
-                                database_save_path=database_save_path,
-                                db_info_save_path=db_info_save_path, with_mask_3d=True)
+        dataset = D3DDataset(ds_name, root_path, traininfo_path, inzip=inzip,
+                            trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline)
+        create_groundtruth_database(dataset, root_path, info_prefix,
+                                    database_save_path=database_save_path,
+                                    db_info_save_path=db_info_save_path, with_mask_3d=True)
 
 if __name__ == "__main__":
     d3d_data_prep("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95)

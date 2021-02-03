@@ -251,7 +251,7 @@ class DataBaseSampler(object):
             s_points_list = []
             s_semantics_list = []
             s_poi_idx_list = []
-            count = 0
+            pts_count = 0
             for info in sampled:
                 file_path = os.path.join(
                     self.data_root,
@@ -264,9 +264,9 @@ class DataBaseSampler(object):
                     sempath = file_path + '.sem'
                     s_semantics_list.append(np.fromfile(sempath, dtype='u1'))
                     poipath = file_path + '.poi'
-                    s_poi_idx_list.append(np.fromfile(poipath, dtype='i8'))
+                    s_poi_idx_list.append(np.fromfile(poipath, dtype='i8') + pts_count)
 
-                count += 1
+                pts_count += len(s_points)
                 s_points_list.append(s_points)
 
             gt_labels = np.array([self.cat2label[s['name']] for s in sampled],

@@ -128,7 +128,7 @@ data = dict(
         type="D3DDataset",
         ds_type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_debug_infos_train.pkl',
+        ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
         phase='training',
         pipeline=train_pipeline,
         obj_classes=class_names,
@@ -138,7 +138,7 @@ data = dict(
         type="D3DDataset",
         ds_type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_debug_infos_val.pkl',
+        ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
         phase='validation',
         pipeline=test_pipeline,
         obj_classes=class_names,
@@ -163,4 +163,4 @@ train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
 evaluation = dict(interval=1)
-total_epochs = 2
+total_epochs = 30

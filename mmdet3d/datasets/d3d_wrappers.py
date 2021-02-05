@@ -88,20 +88,20 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
             calib = loader.calibration_data(i)
             objects = calib.transform_objects(objects, default_frame)
             box_arr = objects.to_numpy()
+            
+            # calculate number of points in the boxes
+            cloud = loader.lidar_data(i, names=lidar_name)
+            box_arr_torch = torch.tensor(box_arr[:, 2:9], dtype=torch.float32)
+            mask = box3dp_crop(torch.tensor(cloud), box_arr_torch)
+            npts = mask.sum(dim=1)
+            annos['num_lidar_pts'] = npts.tolist()
 
-            # adapt to mmdet3d coordinate
+            # adapt box params to mmdet3d coordinate
             box_arr[:, 4] -= box_arr[:, 7] / 2 # move center to box bottom
             box_arr[:, [6,5]] = box_arr[:, [5,6]].copy() # swap l and w
             box_arr[:, 8] = -(box_arr[:, 8] + np.pi / 2) # change yaw angle zero direction
             box_arr[:, 8] = (box_arr[:, 8] + np.pi) % (2*np.pi) - np.pi # wrap angles
             annos['arr'] = box_arr.tolist()
-            
-            # calculate number of points in the boxes
-            cloud = loader.lidar_data(i, names=lidar_name)
-            box_arr = torch.tensor(box_arr[:, 2:9], dtype=torch.float32)
-            mask = box3dp_crop(torch.tensor(cloud), box_arr)
-            npts = mask.sum(dim=1)
-            annos['num_lidar_pts'] = npts.tolist()
 
             metadata['annos'] = annos
 
@@ -274,7 +274,7 @@ class D3DDataset(Custom3DDataset):
                 # adapt back from mmdet3d format
                 position[2] += dimension[2] / 2
                 dimension[0], dimension[1] = dimension[1], dimension[0]
-                rotation = Rotation.from_euler("Z", -box[6] - np.pi / 2) # TODO(zyxin): regenerate result
+                rotation = Rotation.from_euler("Z", -box[6] - np.pi / 2)
 
                 tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
                 detections.append(ObjectTarget3D(position, rotation, dimension, tag)) # TODO(zyxin): add velocity output

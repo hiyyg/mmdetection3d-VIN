@@ -11,7 +11,7 @@ import tqdm
 import pickle
 from d3d.abstraction import ObjectTag, ObjectTarget3D, Target3DArray, EgoPose
 from d3d.benchmarks import DetectionEvaluator
-from d3d.box import crop_3dr
+from d3d.box import box3dp_crop
 from d3d.dataset.base import DetectionDatasetBase, TrackingDatasetBase
 from d3d.dataset.kitti import KittiObjectLoader
 from d3d.dataset.kitti360 import KITTI360Loader
@@ -99,7 +99,7 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
             # calculate number of points in the boxes
             cloud = loader.lidar_data(i, names=lidar_name)
             box_arr = torch.tensor(box_arr[:, 2:9], dtype=torch.float32)
-            mask = crop_3dr(torch.tensor(cloud), box_arr)
+            mask = box3dp_crop(torch.tensor(cloud), box_arr)
             npts = mask.sum(dim=1)
             annos['num_lidar_pts'] = npts.tolist()
 
@@ -274,7 +274,7 @@ class D3DDataset(Custom3DDataset):
                 # adapt back from mmdet3d format
                 position[2] += dimension[2] / 2
                 dimension[0], dimension[1] = dimension[1], dimension[0]
-                rotation = Rotation.from_euler("Z", box[6] - np.pi / 2)
+                rotation = Rotation.from_euler("Z", -box[6] - np.pi / 2) # TODO(zyxin): regenerate result
 
                 tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
                 detections.append(ObjectTarget3D(position, rotation, dimension, tag)) # TODO(zyxin): add velocity output

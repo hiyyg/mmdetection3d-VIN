@@ -187,5 +187,5 @@ train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
 # XXX(zyxin): temporary settings
-evaluation = dict(interval=1, msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')
+evaluation = dict(interval=15)
 total_epochs = 30

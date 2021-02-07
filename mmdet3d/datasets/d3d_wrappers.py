@@ -50,43 +50,38 @@ def resolve_dataset_type(ds_type) -> DetectionDatasetBase:
     else:
         raise ValueError("Dataset name not recognized!")
 
-def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False, ninter_frames: int = 6):
+def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False, ninter_frames: int = 6, with_label=None):
+    if with_label is None:
+        with_label = loader.phase != "testing"
+    
     metalist = []
-    default_frame = loader.VALID_LIDAR_NAMES[0]
 
-    loader_size = 3 if debug else len(loader) 
-    if loader.phase == "testing":
-        # currently no much metadata for testing samples
-        for i in tqdm.trange(loader_size, desc="creating annotation"):
-            metadata = dict(uidx=loader.identity(i))
+    loader_size = 3 if debug else len(loader)
+    for i in tqdm.trange(loader_size, desc="creating annotation"):
+        metadata = dict(uidx=loader.identity(i), anno_frame=lidar_name)
+        calib = loader.calibration_data(i)
 
-            # add intermediate lidar frames
-            sweeps = []
-            calib = loader.calibration_data(i)
-            with loader.return_path():
-                inter_lidar = loader.intermediate_data(i, names=default_frame, ninter_frames=ninter_frames)
-            pose = loader.pose(i)
-            for frame in inter_lidar:
-                lidar_ego_rt = calib.get_extrinsic(frame_from=default_frame)
-                rt = np.linalg.inv(lidar_ego_rt).dot(np.linalg.inv(pose.homo())).dot(frame.pose.homo()).dot(lidar_ego_rt)
-                sweep = dict(data_path=frame.file.resolve(), timestamp=frame.timestamp,
-                             sensor2lidar_translation=rt[:3,3], sensor2lidar_rotation=rt[:3,:3])
-                sweeps.append(sweep)
-            metadata['sweeps'] = sweeps
+        # add intermediate lidar frames
+        sweeps = []
+        with loader.return_path():
+            inter_lidar = loader.intermediate_data(i, names=lidar_name, ninter_frames=ninter_frames)
+        pose = loader.pose(i)
+        for frame in inter_lidar:
+            lidar_ego_rt = calib.get_extrinsic(frame_from=lidar_name)
+            rt = np.linalg.inv(lidar_ego_rt).dot(np.linalg.inv(pose.homo())).dot(frame.pose.homo()).dot(lidar_ego_rt)
+            sweep = dict(data_path=frame.file.resolve(), timestamp=frame.timestamp,
+                        sensor2lidar_translation=rt[:3,3], sensor2lidar_rotation=rt[:3,:3])
+            sweeps.append(sweep)
+        metadata['sweeps'] = sweeps
 
-            metalist.append(metadata)
-    else: # traininig or validation phase
-        for i in tqdm.trange(loader_size, desc="creating annotation"):
-            metadata = dict(uidx=loader.identity(i))
+        if with_label:
             annos = dict(arr=[], num_lidar_pts=[])
 
             # parse array of objects
             objects = loader.annotation_3dobject(i)
-            metadata['anno_frame'] = default_frame
             if len(objects) == 0:
                 continue
-            calib = loader.calibration_data(i)
-            objects = calib.transform_objects(objects, default_frame)
+            objects = calib.transform_objects(objects, lidar_name)
             box_arr = objects.to_numpy()
             
             # calculate number of points in the boxes
@@ -105,20 +100,7 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
 
             metadata['annos'] = annos
 
-            # add intermediate lidar frames
-            sweeps = []
-            with loader.return_path():
-                inter_lidar = loader.intermediate_data(i, names=default_frame, ninter_frames=ninter_frames)
-            pose = loader.pose(i)
-            for frame in inter_lidar:
-                lidar_ego_rt = calib.get_extrinsic(frame_from=default_frame)
-                rt = np.linalg.inv(lidar_ego_rt).dot(np.linalg.inv(pose.homo())).dot(frame.pose.homo()).dot(lidar_ego_rt)
-                sweep = dict(data_path=frame.file.resolve(), timestamp=frame.timestamp,
-                             sensor2lidar_translation=rt[:3,3], sensor2lidar_rotation=rt[:3,:3])
-                sweeps.append(sweep)
-            metadata['sweeps'] = sweeps
-
-            metalist.append(metadata)
+        metalist.append(metadata)
 
     return metalist
 
@@ -246,11 +228,11 @@ class D3DDataset(Custom3DDataset):
 
         return input_dict
 
-    def format_results(self, outputs, msgfile_prefix=None):
+    def format_results(self, outputs, dump_prefix=None):
         """Convert 3D detection results to d3d TargetArray format
         
         Args:
-            msgfile_prefix (str | None): The prefix of msg file.
+            dump_prefix (str | None): The prefix of dumped output file.
         """
         assert isinstance(outputs, list), 'outputs must be a list (current type: %s)' % str(type(outputs))
 
@@ -290,61 +272,74 @@ class D3DDataset(Custom3DDataset):
             else:
                 parsed_segmentation.append(None)
 
-        if msgfile_prefix is not None:
-            mmcv.mkdir_or_exist(msgfile_prefix)
-            with open(osp.join(msgfile_prefix, "detection_results.msg"), "wb") as fout:
+        if dump_prefix is not None:
+            mmcv.mkdir_or_exist(dump_prefix)
+            with open(osp.join(dump_prefix, "detection_results.msg"), "wb") as fout:
                 fout.write(msgpack.packb([arr.serialize()
                                           for arr in parsed_detections
                 ], use_single_float=True))
             if parsed_segmentation[0] is not None:
-                with open(osp.join(msgfile_prefix, "segmentation_results.pkl"), "wb") as fout:
+                with open(osp.join(dump_prefix, "segmentation_results.pkl"), "wb") as fout:
                     pickle.dump(parsed_segmentation, fout)
 
         return parsed_detections, parsed_segmentation
 
     def evaluate(self,
-                 results, 
+                 results,
+                 metric='bbox+segm', # list or string
                  logger=None,
-                 msgfile_prefix=None):
-        classes = [self._loader.VALID_OBJ_CLASSES[name] for name in self.CLASSES]
-        evaluator = DetectionEvaluator(classes, 0.7)
-
-        anno_dt_list, anno_seg_list = self.format_results(results, msgfile_prefix=msgfile_prefix)
-
-        print_log('Calculating eval metrics for object detection', logger=logger)
-        for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-            anno_gt = self._loader.annotation_3dobject(info['uidx'])
-            calib = self._loader.calibration_data(info['uidx'])
-            anno_dt = anno_dt_list[i]
-            stats = evaluator.calc_stats(anno_gt, anno_dt, calib)
-            evaluator.add_stats(stats)
-
-        iou_list = [] # TODO(zyxin): calculate iou for each class
-        valid_ids = np.zeros(128, dtype=bool) # 128 labels at most
-        for id in self.CLASSES_PTS:
-            valid_ids[id] = True
-
-        print_log('Calculating eval metrics for semantic segmentation', logger=logger)
-        for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-            anno_seg = anno_seg_list[i] # estimated
-            if anno_seg is not None:
-                anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'])['semantic']
-                anno_seg_id = anno_seg.pop('semantic_label')
-                assert len(anno_seg_id) == len(anno_seg_gt)
-
-                # only evaluate trained id
-                valid_mask = valid_ids[anno_seg_gt]
-                anno_seg_gt = anno_seg_gt[valid_mask]
-                anno_seg_id = anno_seg_id[valid_mask]
-                tp = np.sum(anno_seg_id == anno_seg_gt)
-                iou = tp / (len(anno_seg_gt)*2 - tp)
-                iou_list.append(iou)
+                 dump_prefix=None):
+                 # TODO: add option dump_vis and dump_submission
 
         results_dict = dict()
-        for k, v in evaluator.ap().items():
-            results_dict["AP/" + k.name] = v
-        if iou_list:
-            results_dict["mIoU"] = np.mean(iou_list)
+        anno_dt_list, anno_seg_list = self.format_results(results, dump_prefix=dump_prefix)
+        message = "Eval completed"
+
+        if 'bbox' in metric:
+            classes = [self._loader.VALID_OBJ_CLASSES[name] for name in self.CLASSES]
+            evaluator = DetectionEvaluator(classes, 0.7)
+
+            print_log('Calculating eval metrics for object detection', logger=logger)
+            for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
+                anno_gt = self._loader.annotation_3dobject(info['uidx'])
+                calib = self._loader.calibration_data(info['uidx'])
+                anno_dt = anno_dt_list[i]
+                stats = evaluator.calc_stats(anno_gt, anno_dt, calib)
+                evaluator.add_stats(stats)
+
+            aps = []
+            for k, v in evaluator.ap().items():
+                aps.append(v)
+                results_dict["AP/" + k.name] = v
+            message += ", mAP: %.2f%%" % (np.mean(aps) * 100)
+
+        if 'segm' in metric:
+            iou_list = [] # TODO(zyxin): calculate iou for each class
+            valid_ids = np.zeros(128, dtype=bool) # 128 labels at most
+            for id in self.CLASSES_PTS:
+                valid_ids[id] = True
+
+            print_log('Calculating eval metrics for semantic segmentation', logger=logger)
+            for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
+                anno_seg = anno_seg_list[i] # estimated
+                if anno_seg is not None:
+                    anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'])['semantic']
+                    anno_seg_id = anno_seg.pop('semantic_label')
+                    assert len(anno_seg_id) == len(anno_seg_gt)
+
+                    # only evaluate trained id
+                    valid_mask = valid_ids[anno_seg_gt]
+                    anno_seg_gt = anno_seg_gt[valid_mask]
+                    anno_seg_id = anno_seg_id[valid_mask]
+                    tp = np.sum(anno_seg_id == anno_seg_gt)
+                    iou = tp / (len(anno_seg_gt)*2 - tp)
+                    iou_list.append(iou)
+
+            if iou_list:
+                results_dict["mIoU"] = np.mean(iou_list)
+                message += ", mIoU: %.2f%%" % (results_dict["mIoU"] * 100)
+
+        print(message)
         return results_dict
 
     def __str__(self):
@@ -369,13 +364,13 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
     traininfo_path = info_path = Path(root_path, f'{info_prefix}_infos_train.pkl')
     mmcv.dump(collect_ann_file(train_loader, lidar_name, debug=debug), info_path)
 
-    # Creating info to validation set
+    # Creating info for validation set
     val_loader = ds_type(root_path, inzip=inzip, phase="validation",
         trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     info_path = Path(root_path, f'{info_prefix}_infos_val.pkl')
     mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug), info_path)
 
-    # Creating info to test set
+    # Creating info for test set
     test_loader = ds_type(root_path, inzip=inzip, phase="testing")
     info_path = Path(root_path, f'{info_prefix}_infos_test.pkl')
     mmcv.dump(collect_ann_file(test_loader, lidar_name, debug=debug), info_path)
@@ -446,5 +441,50 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                                     database_save_path=database_save_path,
                                     db_info_save_path=db_info_save_path, with_mask_3d=True)
 
+def d3d_data_prep_official_val(ds_name, root_path, info_prefix, out_dir=None, inzip=False, lidar_name=0, debug=False):
+    '''
+    Create anno_info of official validation set for testing (without label)
+    '''
+    ds_type = resolve_dataset_type(ds_name)
+    if isinstance(lidar_name, int):
+        lidar_name = ds_type.VALID_LIDAR_NAMES[lidar_name]
+    if out_dir is None:
+        out_dir = root_path
+    if debug and not info_prefix.endswith("debug"):
+        info_prefix += "_debug"
+
+    # get official splits
+    ds_name = ds_name.lower()
+    if ds_name == "nuscenes":
+        val_split = ['scene-0003', 'scene-0012', 'scene-0013', 'scene-0014', 'scene-0015', 'scene-0016', 'scene-0017', 'scene-0018',
+                     'scene-0035', 'scene-0036', 'scene-0038', 'scene-0039', 'scene-0092', 'scene-0093', 'scene-0094', 'scene-0095',
+                     'scene-0096', 'scene-0097', 'scene-0098', 'scene-0099', 'scene-0100', 'scene-0101', 'scene-0102', 'scene-0103',
+                     'scene-0104', 'scene-0105', 'scene-0106', 'scene-0107', 'scene-0108', 'scene-0109', 'scene-0110', 'scene-0221',
+                     'scene-0268', 'scene-0269', 'scene-0270', 'scene-0271', 'scene-0272', 'scene-0273', 'scene-0274', 'scene-0275',
+                     'scene-0276', 'scene-0277', 'scene-0278', 'scene-0329', 'scene-0330', 'scene-0331', 'scene-0332', 'scene-0344',
+                     'scene-0345', 'scene-0346', 'scene-0519', 'scene-0520', 'scene-0521', 'scene-0522', 'scene-0523', 'scene-0524',
+                     'scene-0552', 'scene-0553', 'scene-0554', 'scene-0555', 'scene-0556', 'scene-0557', 'scene-0558', 'scene-0559',
+                     'scene-0560', 'scene-0561', 'scene-0562', 'scene-0563', 'scene-0564', 'scene-0565', 'scene-0625', 'scene-0626',
+                     'scene-0627', 'scene-0629', 'scene-0630', 'scene-0632', 'scene-0633', 'scene-0634', 'scene-0635', 'scene-0636',
+                     'scene-0637', 'scene-0638', 'scene-0770', 'scene-0771', 'scene-0775', 'scene-0777', 'scene-0778', 'scene-0780',
+                     'scene-0781', 'scene-0782', 'scene-0783', 'scene-0784', 'scene-0794', 'scene-0795', 'scene-0796', 'scene-0797',
+                     'scene-0798', 'scene-0799', 'scene-0800', 'scene-0802', 'scene-0904', 'scene-0905', 'scene-0906', 'scene-0907',
+                     'scene-0908', 'scene-0909', 'scene-0910', 'scene-0911', 'scene-0912', 'scene-0913', 'scene-0914', 'scene-0915',
+                     'scene-0916', 'scene-0917', 'scene-0919', 'scene-0920', 'scene-0921', 'scene-0922', 'scene-0923', 'scene-0924',
+                     'scene-0925', 'scene-0926', 'scene-0927', 'scene-0928', 'scene-0929', 'scene-0930', 'scene-0931', 'scene-0962',
+                     'scene-0963', 'scene-0966', 'scene-0967', 'scene-0968', 'scene-0969', 'scene-0971', 'scene-0972', 'scene-1059',
+                     'scene-1060', 'scene-1061', 'scene-1062', 'scene-1063', 'scene-1064', 'scene-1065', 'scene-1066', 'scene-1067',
+                     'scene-1068', 'scene-1069', 'scene-1070', 'scene-1071', 'scene-1072', 'scene-1073']
+        by_seq = True
+    else:
+        raise ValueError("Dataset name not supported!")
+
+    # Creating info for validation set, but without labels
+    val_loader = ds_type(root_path, inzip=inzip, phase="validation",
+        trainval_split=val_split, trainval_byseq=by_seq)
+    info_path = Path(root_path, f'{info_prefix}_infos_valtest.pkl')
+    mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug, with_label=False), info_path)
+
 if __name__ == "__main__":
-    d3d_data_prep("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95)
+    # d3d_data_prep("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95)
+    d3d_data_prep_official_val("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes")

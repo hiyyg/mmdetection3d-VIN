@@ -29,4 +29,4 @@ train_cfg = dict(
     pos_weight=-1,
     debug=False)
 
-evaluation = dict(msgfile_prefix='/home/jacobz/PointCloud/mmdetection3d/.dev_scripts')
+evaluation = dict(dump_prefix='work_dirs/hv_second_secfpn_6x8_80e_d3d-kitti-object-car')

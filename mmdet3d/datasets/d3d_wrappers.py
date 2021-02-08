@@ -7,9 +7,10 @@ import msgpack
 import numpy as np
 import os.path as osp
 import torch
+from torch.utils.data import dataset
 import tqdm
 import pickle
-from d3d.abstraction import ObjectTag, ObjectTarget3D, Target3DArray, EgoPose
+from d3d.abstraction import ObjectTag, ObjectTarget3D, Target3DArray, EgoPose, TrackingTarget3D
 from d3d.benchmarks import DetectionEvaluator
 from d3d.box import box3dp_crop
 from d3d.dataset.base import DetectionDatasetBase, TrackingDatasetBase
@@ -228,11 +229,13 @@ class D3DDataset(Custom3DDataset):
 
         return input_dict
 
-    def format_results(self, outputs, dump_prefix=None):
+    def format_results(self, outputs, dump_prefix=None, dump_visual=False, dump_submission=False, score_threshold=0.4):
         """Convert 3D detection results to d3d TargetArray format
         
         Args:
             dump_prefix (str | None): The prefix of dumped output file.
+            dump_visual (bool): Whether dump visualization files.
+            dump_submission (bool): Whether dump submission files.
         """
         assert isinstance(outputs, list), 'outputs must be a list (current type: %s)' % str(type(outputs))
 
@@ -259,7 +262,13 @@ class D3DDataset(Custom3DDataset):
                 rotation = Rotation.from_euler("Z", -box[6] - np.pi / 2)
 
                 tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
-                detections.append(ObjectTarget3D(position, rotation, dimension, tag)) # TODO(zyxin): add velocity output
+
+                if len(box) > 7: # with velocity output
+                    vel = [box[7], box[8], 0.0]
+                    avel = [float('nan')] * 3
+                    detections.append(TrackingTarget3D(position, rotation, dimension, vel, avel, tag))
+                else:
+                    detections.append(ObjectTarget3D(position, rotation, dimension, tag))
             parsed_detections.append(detections)
 
             # parse segmentation result
@@ -282,17 +291,61 @@ class D3DDataset(Custom3DDataset):
                 with open(osp.join(dump_prefix, "segmentation_results.pkl"), "wb") as fout:
                     pickle.dump(parsed_segmentation, fout)
 
+            # save visualization results
+            if dump_visual:
+                vis_path = osp.join(dump_prefix, "visual")
+                mmcv.mkdir_or_exist(vis_path)
+
+                print('Dumping visualization files')
+                for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
+                    uidx = info['uidx']
+                    cloud = self._loader.lidar_data(uidx)[:, :4]
+                    visdata = dict(cloud=cloud)
+                    det, seg = parsed_detections[i], parsed_segmentation[i]
+
+                    if det is not None:
+                        calib = self._loader.calibration_data(uidx)
+                        visdata['anno_dt'] = calib.transform_objects(det, info['anno_frame']).filter_score(score_threshold)
+                        visdata['anno_gt'] = calib.transform_objects(self._loader.annotation_3dobject(uidx), info['anno_frame'])
+                    if seg is not None:
+                        visdata['semantic_dt'] = seg['semantic_label']
+                        visdata['semantic_scores'] = seg['semantic_scores']
+                        visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx)['semantic']
+
+                    with open(osp.join(vis_path, "%06d.pkl" % i), "wb") as fout:
+                        pickle.dump(visdata, fout)
+
+            if dump_submission:
+                sdet_path = osp.join(dump_prefix, "submission_detection")
+                sseg_path = osp.join(dump_prefix, "submission_segmentation")
+                mmcv.mkdir_or_exist(sdet_path)
+                mmcv.mkdir_or_exist(sseg_path)
+
+                print('Dumping submission files')
+                for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
+                    uidx = info['uidx']
+                    det, seg = parsed_detections[i], parsed_segmentation[i]
+
+                    if det is not None:
+                        with open(osp.join(sdet_path, "%06d.dump" % i), "wb") as fout:
+                            self._loader.dump_detection_output(uidx, det, fout)
+
+                    if seg is not None:
+                        seg['semantic_label'].tofile(osp.join(sseg_path, "%06d.bin" % i))
+
         return parsed_detections, parsed_segmentation
 
     def evaluate(self,
                  results,
                  metric='bbox+segm', # list or string
                  logger=None,
-                 dump_prefix=None):
-                 # TODO: add option dump_vis and dump_submission
+                 dump_prefix=None,
+                 dump_visual=False,
+                 dump_submission=False):
 
         results_dict = dict()
-        anno_dt_list, anno_seg_list = self.format_results(results, dump_prefix=dump_prefix)
+        anno_dt_list, anno_seg_list = self.format_results(results, dump_prefix=dump_prefix,
+            dump_visual=dump_visual, dump_submission=dump_submission)
         message = "Eval completed"
 
         if 'bbox' in metric:

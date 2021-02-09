@@ -310,7 +310,7 @@ class D3DDataset(Custom3DDataset):
                     if seg is not None:
                         visdata['semantic_dt'] = seg['semantic_label']
                         visdata['semantic_scores'] = seg['semantic_scores']
-                        visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx)['semantic']
+                        visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx, parse_tag=False)['semantic']
 
                     with open(osp.join(vis_path, "%06d.pkl" % i), "wb") as fout:
                         pickle.dump(visdata, fout)
@@ -327,11 +327,10 @@ class D3DDataset(Custom3DDataset):
                     det, seg = parsed_detections[i], parsed_segmentation[i]
 
                     if det is not None:
-                        with open(osp.join(sdet_path, "%06d.dump" % i), "wb") as fout:
-                            self._loader.dump_detection_output(uidx, det, fout)
+                        self._loader.dump_detection_output(uidx, det, osp.join(sdet_path, "%06d.dump" % i))
 
                     if seg is not None:
-                        seg['semantic_label'].tofile(osp.join(sseg_path, "%06d.bin" % i))
+                        self._loader.dump_segmentation_output(uidx, seg['semantic_label'], sseg_path)
 
         return parsed_detections, parsed_segmentation
 
@@ -376,7 +375,7 @@ class D3DDataset(Custom3DDataset):
             for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
                 anno_seg = anno_seg_list[i] # estimated
                 if anno_seg is not None:
-                    anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'])['semantic']
+                    anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'], parse_tag=False)['semantic']
                     anno_seg_id = anno_seg.pop('semantic_label')
                     assert len(anno_seg_id) == len(anno_seg_gt)
 

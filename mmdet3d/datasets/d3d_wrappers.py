@@ -327,7 +327,7 @@ class D3DDataset(Custom3DDataset):
                     det, seg = parsed_detections[i], parsed_segmentation[i]
 
                     if det is not None:
-                        self._loader.dump_detection_output(uidx, det, osp.join(sdet_path, "%06d.dump" % i))
+                        self._loader.dump_detection_output(uidx, det, osp.join(sdet_path, "%06d.dump" % i), ranges={})
 
                     if seg is not None:
                         self._loader.dump_segmentation_output(uidx, seg['semantic_label'], sseg_path)

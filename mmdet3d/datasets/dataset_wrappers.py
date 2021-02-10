@@ -19,43 +19,30 @@ class CBGSDataset(object):
         self.dataset = dataset
         self.CLASSES = dataset.CLASSES
         self.cat2id = {name: i for i, name in enumerate(self.CLASSES)}
-        self.sample_indices = self._get_sample_indices()
-        # self.dataset.data_infos = self.data_infos
-        if hasattr(self.dataset, 'flag'):
-            self.flag = np.array(
-                [self.dataset.flag[ind] for ind in self.sample_indices],
-                dtype=np.uint8)
+        self.catrng = np.random.RandomState()
+        self._get_sample_indices()
+        self.flag = np.zeros(len(self), dtype=np.uint8)
 
     def _get_sample_indices(self):
         """Load annotations from ann_file.
 
         Args:
             ann_file (str): Path of the annotation file.
-
-        Returns:
-            list[dict]: List of annotations after class sampling.
         """
-        class_sample_idxs = {cat_id: [] for cat_id in self.cat2id.values()}
+        self.class_sample_idxs = {cat_id: [] for cat_id in self.cat2id.values()}
         for idx in range(len(self.dataset)):
             sample_cat_ids = self.dataset.get_cat_ids(idx)
             for cat_id in sample_cat_ids:
-                class_sample_idxs[cat_id].append(idx)
+                self.class_sample_idxs[cat_id].append(idx)
         duplicated_samples = sum(
-            [len(v) for _, v in class_sample_idxs.items()])
+            [len(v) for _, v in self.class_sample_idxs.items()])
         class_distribution = {
             k: len(v) / duplicated_samples
-            for k, v in class_sample_idxs.items()
+            for k, v in self.class_sample_idxs.items()
         }
 
-        sample_indices = []
-
-        frac = 1.0 / len(self.CLASSES)
-        ratios = [frac / v for v in class_distribution.values()]
-        for cls_inds, ratio in zip(list(class_sample_idxs.values()), ratios):
-            sample_indices += np.random.choice(cls_inds,
-                                               int(len(cls_inds) *
-                                                   ratio)).tolist()
-        return sample_indices
+        norm = 1 / sum(1/v for v in class_distribution.values())
+        self.probabilites = [(k, norm/v) for k, v in class_distribution.items()]
 
     def __getitem__(self, idx):
         """Get item from infos according to the given index.
@@ -63,7 +50,9 @@ class CBGSDataset(object):
         Returns:
             dict: Data dictionary of the corresponding index.
         """
-        ori_idx = self.sample_indices[idx]
+        cat = self.catrng.choice([k for k,v in self.probabilites],
+                               p=[v for k,v in self.probabilites])
+        ori_idx = np.random.choice(self.class_sample_idxs[cat])
         return self.dataset[ori_idx]
 
     def __len__(self):
@@ -72,4 +61,4 @@ class CBGSDataset(object):
         Returns:
             int: Length of data infos.
         """
-        return len(self.sample_indices)
+        return len(self.dataset)

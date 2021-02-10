@@ -363,6 +363,7 @@ class CenterHead(nn.Module):
 
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
+        self.loss_semantic_pow = loss_semantic.pop('pow', 1)
         self.loss_semantic = build_loss(loss_semantic)
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.num_anchor_per_locs = [n for n in num_classes]
@@ -671,7 +672,11 @@ class CenterHead(nn.Module):
             semantic_label = torch.cat(pts_semantic_mask).long()
             semantic_loss = self.loss_semantic(semantic_preds[0],
                                                semantic_label)
-            semantic_loss = semantic_loss.sqrt() # TODO(zyxin): this is used since semantic loss is too small
+            if self.loss_semantic_pow == 0.5:
+                semantic_loss = semantic_loss.sqrt()
+            elif self.loss_semantic_pow != 1:
+                semantic_loss = semantic_loss.pow(self.loss_semantic_pow)
+
             loss_dict[f'loss_semantics'] = semantic_loss
         else:
             task_preds = preds_dicts

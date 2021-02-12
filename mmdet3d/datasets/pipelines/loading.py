@@ -216,11 +216,21 @@ class PointSegClassMapping(object):
         valid_cat_ids (tuple[int]): A tuple of valid category.
         remove_invalid (bool): Whether remove semantic label for
             points with invalid categories
+        as_mapping (bool): Whether valid_cat_ids input is a mapping rather
+            than a plain list. If input is mapping, you can use None or -1
+            to denote that a class is ignored (considered as background)
     """
 
-    def __init__(self, valid_cat_ids, remove_invalid=False):
+    def __init__(self, valid_cat_ids, remove_invalid=False, as_mapping=False):
         self.valid_cat_ids = valid_cat_ids
         self.remove_invalid = remove_invalid
+        self.as_mapping = as_mapping
+
+        if as_mapping:
+            neg_cls = max(valid_cat_ids) + 1
+            for i in range(len(valid_cat_ids)):
+                if valid_cat_ids[i] is None or valid_cat_ids[i] < 0:
+                    valid_cat_ids[i] = neg_cls
 
     def __call__(self, results):
         """Call function to map original semantic class to valid category ids.
@@ -236,13 +246,17 @@ class PointSegClassMapping(object):
         """
         assert 'pts_semantic_mask' in results
         pts_semantic_mask = results['pts_semantic_mask']
-        neg_cls = len(self.valid_cat_ids)
 
-        max_label = np.max(pts_semantic_mask)
-        max_label = max(max_label, *self.valid_cat_ids)
-        valid_table = np.full(max_label + 1, neg_cls)
-        for i, label in enumerate(self.valid_cat_ids):
-            valid_table[label] = i
+        if self.as_mapping:
+            valid_table = np.array(self.valid_cat_ids)
+            neg_cls = np.max(valid_table)
+        else:
+            neg_cls = len(self.valid_cat_ids)
+            max_label = np.max(pts_semantic_mask)
+            max_label = max(max_label, *self.valid_cat_ids)
+            valid_table = np.full(max_label + 1, neg_cls)
+            for i, label in enumerate(self.valid_cat_ids):
+                valid_table[label] = i
         pts_semantic_mask = valid_table[pts_semantic_mask]
 
         if self.remove_invalid:

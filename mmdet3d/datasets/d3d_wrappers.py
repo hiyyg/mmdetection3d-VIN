@@ -336,7 +336,7 @@ class D3DDataset(Custom3DDataset):
 
     def evaluate(self,
                  results,
-                 metric='bbox+segm', # list or string
+                 metric='bbox+segm', # list or string, box: box ap; segm: segm iou; raw: segm iou with tag not parsed
                  logger=None,
                  dump_prefix=None,
                  dump_visual=False,
@@ -366,7 +366,7 @@ class D3DDataset(Custom3DDataset):
             message += ", mAP: %.2f%%" % (np.mean(aps) * 100)
 
         if 'segm' in metric:
-            iou_list = [] # TODO(zyxin): calculate iou for each class
+            iou_list = []
             valid_ids = np.zeros(128, dtype=bool) # 128 labels at most
             for id in self.CLASSES_PTS:
                 valid_ids[id] = True
@@ -375,7 +375,10 @@ class D3DDataset(Custom3DDataset):
             for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
                 anno_seg = anno_seg_list[i] # estimated
                 if anno_seg is not None:
-                    anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'], parse_tag=False)['semantic']
+                    if 'raw' in metric:
+                        anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'], parse_tag=False)['semantic']
+                    else:
+                        anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'])['semantic']
                     anno_seg_id = anno_seg.pop('semantic_label')
                     assert len(anno_seg_id) == len(anno_seg_gt)
 
@@ -396,6 +399,17 @@ class D3DDataset(Custom3DDataset):
 
     def __str__(self):
         return "D3DDataset(%s), phase: %s" % (self._loader.__class__.__name__, self._loader.phase)
+
+    def get_cat_ids(self, idx):
+        annos = self.data_infos[idx]['annos']
+
+        cat_ids = []
+        for box in annos['arr']:
+            cenum = self._loader.VALID_OBJ_CLASSES(int(box[0]))
+            if cenum.name in self.CLASSES:
+                cat_ids.append(self.cat2id[cenum.name])
+
+        return cat_ids
 
 
 def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,

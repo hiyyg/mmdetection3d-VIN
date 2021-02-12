@@ -1,20 +1,16 @@
 _base_ = [
-    '../_base_/datasets/d3d-nuscenes.py',
-    '../_base_/models/centerpoint_01voxel_second_secfpn_nus.py',
-    '../_base_/schedules/cyclic_20e.py', '../_base_/default_runtime.py'
+    './[exp]centerpoint_01voxel_d3d-nuscenes_full-semantic-wo-sem-sample.py'
 ]
 
-point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+voxel_size = [0.075, 0.075, 0.2]
+point_cloud_range = [-54, -54, -5.0, 54, 54, 3.0]
 class_names = [
-    'car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle',
-    'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
+    'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
+    'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
 ]
-# directly specify class mapping. 
 seg_mapping = [ 0,  0,  7,  7,  7,  0,  7,  0,  0,  1,  0,  0,  8,  0,  2,  3,  3,
         4,  5,  0,  0,  6,  9, 10, 11, 12, 13, 14, 15,  0, 16,  0]
 seg_mapping = [i-1 for i in seg_mapping] # valid label are all subtracted by 1 to prevent 0 as background
-seg_nclasses = max(seg_mapping) + 2
-seg_class_ids = list(range(1, seg_nclasses)) # used to reverse mapping
 
 dataset_type = 'nuscenes'
 data_root = 'data/nuscenes_d3d/'
@@ -134,67 +130,27 @@ test_pipeline = [
 ]
 
 model = dict(
-    pts_voxel_layer=dict(point_cloud_range=point_cloud_range),
+    pts_voxel_layer=dict(
+        voxel_size=voxel_size, point_cloud_range=point_cloud_range),
+    pts_middle_encoder=dict(sparse_shape=[41, 1440, 1440]),
     pts_bbox_head=dict(
-        bbox_coder=dict(pc_range=point_cloud_range[:2]),
+        bbox_coder=dict(
+            voxel_size=voxel_size[:2], pc_range=point_cloud_range[:2]),
         semantic_head=dict(
-            type='SemanticHead',
-            num_classes=seg_nclasses,
-            point_cloud_range=point_cloud_range,
-            in_pts_channels=5),
-        loss_semantic=dict(
-            type="FocalLoss", use_sigmoid=True,
-            reduction='mean', loss_weight=2, pow=0.5)))
+            point_cloud_range=point_cloud_range)))
+
+train_cfg = dict(
+    pts=dict(
+        grid_size=[1440, 1440, 40],
+        voxel_size=voxel_size,
+        point_cloud_range=point_cloud_range))
+
+test_cfg = dict(
+    pts=dict(voxel_size=voxel_size[:2], pc_range=point_cloud_range[:2]))
 
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=2,
     workers_per_gpu=4,
-    train=dict(
-        type="D3DDataset",
-        ds_type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
-        phase='training',
-        pipeline=train_pipeline,
-        obj_classes=class_names,
-        pts_classes=seg_class_ids,
-        test_mode=False),
-    val=dict(
-        type="D3DDataset",
-        ds_type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
-        phase='validation',
-        pipeline=test_pipeline,
-        obj_classes=class_names,
-        pts_classes=seg_class_ids,
-        test_mode=True),
-    # test=dict(
-    #     type="D3DDataset",
-    #     ds_type=dataset_type,
-    #     data_root=data_root,
-    #     ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
-    #     phase='testing',
-    #     pipeline=test_pipeline,
-    #     obj_classes=class_names,
-    #     pts_classes=seg_class_ids,
-    #     modality=input_modality,
-    #     test_mode=True))
-    test=dict(
-        type="D3DDataset",
-        ds_type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
-        phase='validation',
-        pipeline=test_pipeline,
-        obj_classes=class_names,
-        pts_classes=seg_class_ids,
-        test_mode=True))
-
-# model training and testing settings
-train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
-test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
-
-# XXX(zyxin): temporary settings
-evaluation = dict(interval=1, dump_prefix='work_dirs/[exp]centerpoint_01voxel_d3d-nuscenes_full-semantic')
-total_epochs = 30
+    train=dict(pipeline=train_pipeline),
+    val=dict(pipeline=test_pipeline),
+    test=dict(pipeline=test_pipeline))

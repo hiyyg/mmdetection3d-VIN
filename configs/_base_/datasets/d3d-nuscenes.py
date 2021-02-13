@@ -8,14 +8,6 @@ class_names = [
 ]
 dataset_type = 'nuscenes'
 data_root = 'data/nuscenes_d3d/'
-# Input modality for nuScenes dataset, this is consistent with the submission
-# format which requires the information in input_modality.
-input_modality = dict(
-    use_lidar=True,
-    use_camera=False,
-    use_radar=False,
-    use_map=False,
-    use_external=False)
 file_client_args = dict(backend='disk')
 
 db_sampler = dict(
@@ -59,11 +51,13 @@ train_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=10,
+        sweeps_num=10, # TODO(zyxin): dynamic number of sweeps
+        use_dim=[0, 1, 2, 3, 4],
+        remove_close=True,
         file_client_args=file_client_args),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     dict(type='ObjectSample', db_sampler=db_sampler),
@@ -72,7 +66,10 @@ train_pipeline = [
         rot_range=[-0.3925, 0.3925],
         scale_ratio_range=[0.95, 1.05],
         translation_std=[0, 0, 0]),
-    dict(type='RandomFlip3D', flip_ratio_bev_horizontal=0.5),
+    dict(
+        type='RandomFlip3D',
+        flip_ratio_bev_horizontal=0.5,
+        flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
@@ -85,11 +82,12 @@ test_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=10,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='MultiScaleFlipAug3D',
@@ -124,7 +122,6 @@ data = dict(
         phase='training',
         pipeline=train_pipeline,
         obj_classes=class_names,
-        modality=input_modality,
         test_mode=False),
     val=dict(
         type="D3DDataset",
@@ -134,20 +131,24 @@ data = dict(
         phase='validation',
         pipeline=test_pipeline,
         obj_classes=class_names,
-        modality=input_modality,
         test_mode=True),
+    # test=dict(
+    #     type="D3DDataset",
+    #     ds_type=dataset_type,
+    #     data_root=data_root,
+    #     ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
+    #     phase='testing',
+    #     pipeline=test_pipeline,
+    #     obj_classes=class_names,
+    #     test_mode=True))
     test=dict(
         type="D3DDataset",
         ds_type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
-        phase='testing',
+        ann_file=data_root + 'd3d_nuscenes_infos_valtest.pkl',
+        phase='validation',
         pipeline=test_pipeline,
         obj_classes=class_names,
-        modality=input_modality,
         test_mode=True))
-# For nuScenes dataset, we usually evaluate the model at the end of training.
-# Since the models are trained by 24 epochs by default, we set evaluation
-# interval to be 24. Please change the interval accordingly if you do not
-# use a default schedule.
-evaluation = dict(interval=24)
+
+evaluation = dict(interval=1)

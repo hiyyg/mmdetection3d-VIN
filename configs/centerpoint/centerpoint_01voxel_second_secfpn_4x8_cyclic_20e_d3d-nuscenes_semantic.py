@@ -9,14 +9,15 @@ class_names = [
     'car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle',
     'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
 ]
+# directly specify class mapping. 
+seg_mapping = [ 0,  0,  7,  7,  7,  0,  7,  0,  0,  1,  0,  0,  8,  0,  2,  3,  3,
+        4,  5,  0,  0,  6,  9, 10, 11, 12, 13, 14, 15,  0, 16,  0]
+seg_mapping = [i-1 for i in seg_mapping] # valid label are all subtracted by 1 to prevent 0 as background
+seg_nclasses = max(seg_mapping) + 2
+seg_class_ids = list(range(1, seg_nclasses)) # used to reverse mapping
+
 dataset_type = 'nuscenes'
 data_root = 'data/nuscenes_d3d/'
-input_modality = dict(
-    use_lidar=True,
-    use_camera=False,
-    use_radar=False,
-    use_map=False,
-    use_external=False)
 file_client_args = dict(backend='disk')
 
 db_sampler = dict(
@@ -52,7 +53,7 @@ db_sampler = dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args))
 
 train_pipeline = [
@@ -60,15 +61,23 @@ train_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
+    dict(type='LoadAnnotations3D',
+        with_bbox_3d=True,
+        with_label_3d=True,
+        with_seg_3d='u1'),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=4,
-        use_dim=5,
+        sweeps_num=4, # TODO(zyxin): dynamic number of sweeps
+        use_dim=[0, 1, 2, 3, 4],
+        remove_close=True,
         file_client_args=file_client_args),
-    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    dict(type='ObjectSample', db_sampler=db_sampler),
+    dict(type='ObjectSample', db_sampler=db_sampler, sample_semantics=False),
+    dict(type='PointSegClassMapping',
+        valid_cat_ids=seg_mapping,
+        remove_invalid=False,
+        as_mapping=True),
     dict(
         type='GlobalRotScaleTrans',
         rot_range=[-0.3925, 0.3925],
@@ -76,7 +85,6 @@ train_pipeline = [
         translation_std=[0, 0, 0]),
     dict(
         type='RandomFlip3D',
-        sync_2d=False,
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
@@ -84,19 +92,20 @@ train_pipeline = [
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d',
+        'pts_semantic_mask', 'pts_of_interest_idx'])
 ]
 test_pipeline = [
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=4,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='MultiScaleFlipAug3D',
@@ -111,14 +120,30 @@ test_pipeline = [
                 translation_std=[0, 0, 0]),
             dict(type='RandomFlip3D'),
             dict(
+                # This step makes semantic estimation impossible for points out of range
+                # TODO(zyxin): consider also taking in the whole point cloud and estimate the points
+                #              out of range by the nearest voxel?
                 type='PointsRangeFilter', point_cloud_range=point_cloud_range),
             dict(
                 type='DefaultFormatBundle3D',
                 class_names=class_names,
                 with_label=False),
-            dict(type='Collect3D', keys=['points'])
+            dict(type='Collect3D', keys=['points', 'pts_of_interest_idx', 'pts_of_interest_revidx'])
         ])
 ]
+
+model = dict(
+    pts_voxel_layer=dict(point_cloud_range=point_cloud_range),
+    pts_bbox_head=dict(
+        bbox_coder=dict(pc_range=point_cloud_range[:2]),
+        semantic_head=dict(
+            type='SemanticHead',
+            num_classes=seg_nclasses,
+            point_cloud_range=point_cloud_range,
+            in_pts_channels=5),
+        loss_semantic=dict(
+            type="FocalLoss", use_sigmoid=True,
+            reduction='mean', loss_weight=6, pow=0.5)))
 
 data = dict(
     samples_per_gpu=4,
@@ -131,7 +156,7 @@ data = dict(
         phase='training',
         pipeline=train_pipeline,
         obj_classes=class_names,
-        modality=input_modality,
+        pts_classes=seg_class_ids,
         test_mode=False),
     val=dict(
         type="D3DDataset",
@@ -141,24 +166,32 @@ data = dict(
         phase='validation',
         pipeline=test_pipeline,
         obj_classes=class_names,
-        modality=input_modality,
+        pts_classes=seg_class_ids,
         test_mode=True),
+    # test=dict(
+    #     type="D3DDataset",
+    #     ds_type=dataset_type,
+    #     data_root=data_root,
+    #     ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
+    #     phase='testing',
+    #     pipeline=test_pipeline,
+    #     obj_classes=class_names,
+    #     pts_classes=seg_class_ids,
+    #     test_mode=True))
     test=dict(
         type="D3DDataset",
         ds_type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
-        phase='testing',
+        ann_file=data_root + 'd3d_nuscenes_infos_valtest.pkl',
+        phase='validation',
         pipeline=test_pipeline,
         obj_classes=class_names,
-        modality=input_modality,
+        pts_classes=seg_class_ids,
         test_mode=True))
 
-model = dict(
-    pts_voxel_layer=dict(point_cloud_range=point_cloud_range),
-    pts_bbox_head=dict(bbox_coder=dict(pc_range=point_cloud_range[:2])))
 # model training and testing settings
 train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
-evaluation = dict(interval=1)
+evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic')
+total_epochs = 40

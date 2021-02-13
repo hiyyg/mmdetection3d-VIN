@@ -264,7 +264,7 @@ class DataBaseSampler(object):
                     sempath = file_path + '.sem'
                     s_semantics_list.append(np.fromfile(sempath, dtype='u1'))
                     poipath = file_path + '.poi'
-                    s_poi_idx_list.append(np.fromfile(poipath, dtype='i8') + pts_count)
+                    s_poi_idx_list.append(np.fromfile(poipath, dtype='u4') + pts_count)
 
                 pts_count += len(s_points)
                 s_points_list.append(s_points)

@@ -322,9 +322,8 @@ def create_groundtruth_database(dataset_class,
                 sample_poi = np.zeros(len(points), dtype=bool)
                 sample_poi[poi_idx] = True
                 sample_poi, = np.where(sample_poi[point_indices[:, i]])
-                # TODO(zyxin): convert sample_poi to int32 to save space
                 with open(osp.join(database_save_path, filename + '.poi'), 'w') as f:
-                    sample_poi.tofile(f)
+                    sample_poi.astype('u4').tofile(f)
                 assert len(gt_points[sample_poi]) == len(semantic_points)
 
             db_info = {

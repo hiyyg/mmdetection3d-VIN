@@ -90,7 +90,7 @@ class LoadPointsFromMultiSweeps(object):
     def __init__(self,
                  sweeps_num=10,
                  load_dim=5,
-                 use_dim=[0, 1, 2, 4], # TODO: (zyxin): not using intensity ???
+                 use_dim=[0, 1, 2, 4],
                  file_client_args=dict(backend='disk'),
                  pad_empty_sweeps=False,
                  remove_close=False,

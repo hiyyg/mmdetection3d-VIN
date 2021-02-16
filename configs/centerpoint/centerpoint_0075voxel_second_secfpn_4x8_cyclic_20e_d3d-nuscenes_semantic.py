@@ -1,12 +1,12 @@
 _base_ = [
-    './[exp]centerpoint_01voxel_d3d-nuscenes_full-semantic-wo-sem-sample.py'
+    './centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic.py'
 ]
 
 voxel_size = [0.075, 0.075, 0.2]
 point_cloud_range = [-54, -54, -5.0, 54, 54, 3.0]
 class_names = [
-    'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
-    'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
+    'car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle',
+    'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
 ]
 seg_mapping = [ 0,  0,  7,  7,  7,  0,  7,  0,  0,  1,  0,  0,  8,  0,  2,  3,  3,
         4,  5,  0,  0,  6,  9, 10, 11, 12, 13, 14, 15,  0, 16,  0]
@@ -49,7 +49,7 @@ db_sampler = dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args))
 
 train_pipeline = [
@@ -57,7 +57,7 @@ train_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(type='LoadAnnotations3D',
         with_bbox_3d=True,
@@ -66,7 +66,7 @@ train_pipeline = [
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=4, # TODO(zyxin): dynamic number of sweeps
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         remove_close=True,
         file_client_args=file_client_args),
     dict(type='ObjectSample', db_sampler=db_sampler, sample_semantics=False),
@@ -81,7 +81,6 @@ train_pipeline = [
         translation_std=[0, 0, 0]),
     dict(
         type='RandomFlip3D',
-        sync_2d=False,
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
@@ -97,12 +96,12 @@ test_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=4,
-        use_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
         type='MultiScaleFlipAug3D',
@@ -154,3 +153,6 @@ data = dict(
     train=dict(pipeline=train_pipeline),
     val=dict(pipeline=test_pipeline),
     test=dict(pipeline=test_pipeline))
+
+evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_0075voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic')
+total_epochs = 40

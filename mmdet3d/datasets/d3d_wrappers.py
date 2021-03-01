@@ -4,6 +4,8 @@ This file provides dataset interfaces with d3d as backend
 import d3d
 import mmcv
 import msgpack
+import msgpack_numpy
+msgpack_numpy.patch()
 import numpy as np
 import os.path as osp
 import torch
@@ -242,6 +244,7 @@ class D3DDataset(Custom3DDataset):
         parsed_detections = []
         parsed_segmentation = []
 
+        avel = [float('nan')] * 3 # dummy angular velocity
         for idx, result in enumerate(outputs):
             if 'pts_bbox' in result: # this is the case with CenterNet output
                 bbox_result = result.pop('pts_bbox')
@@ -250,9 +253,10 @@ class D3DDataset(Custom3DDataset):
 
             # parse object detection result
             detections = Target3DArray(frame=self.data_infos[idx]['anno_frame'])
-            for box, score, label in zip(bbox_result['boxes_3d'].tensor.tolist(),
-                                         bbox_result['scores_3d'].tolist(),
-                                         bbox_result['labels_3d'].tolist()):
+            boxes_3d = bbox_result.pop('boxes_3d').tensor.tolist()
+            scores_3d = bbox_result.pop('scores_3d').tolist()
+            labels_3d = bbox_result.pop('labels_3d').tolist()
+            for box, score, label in zip(boxes_3d, scores_3d, labels_3d):
                 position = box[:3]
                 dimension = box[3:6]
 
@@ -265,7 +269,6 @@ class D3DDataset(Custom3DDataset):
 
                 if len(box) > 7: # with velocity output
                     vel = [box[7], box[8], 0.0]
-                    avel = [float('nan')] * 3
                     detections.append(TrackingTarget3D(position, rotation, dimension, vel, avel, tag))
                 else:
                     detections.append(ObjectTarget3D(position, rotation, dimension, tag))
@@ -281,15 +284,20 @@ class D3DDataset(Custom3DDataset):
             else:
                 parsed_segmentation.append(None)
 
+        outputs.clear() # save memory
         if dump_prefix is not None:
             mmcv.mkdir_or_exist(dump_prefix)
+            print('Dumping results')
+            packer = msgpack.Packer(use_single_float=True)
             with open(osp.join(dump_prefix, "detection_results.msg"), "wb") as fout:
-                fout.write(msgpack.packb([arr.serialize()
-                                          for arr in parsed_detections
-                ], use_single_float=True))
+                fout.write(packer.pack_array_header(len(parsed_detections)))
+                for det in parsed_detections: # stream packing
+                    fout.write(packer.pack(det.serialize()))
             if parsed_segmentation[0] is not None:
-                with open(osp.join(dump_prefix, "segmentation_results.pkl"), "wb") as fout:
-                    pickle.dump(parsed_segmentation, fout)
+                with open(osp.join(dump_prefix, "segmentation_results.msg"), "wb") as fout:
+                    fout.write(packer.pack_array_header(len(parsed_segmentation)))
+                    for seg in parsed_segmentation: # stream packing
+                        fout.write(packer.pack(seg))
 
             # save visualization results
             if dump_visual:
@@ -306,11 +314,13 @@ class D3DDataset(Custom3DDataset):
                     if det is not None:
                         calib = self._loader.calibration_data(uidx)
                         visdata['anno_dt'] = calib.transform_objects(det, info['anno_frame']).filter_score(score_threshold)
-                        visdata['anno_gt'] = calib.transform_objects(self._loader.annotation_3dobject(uidx), info['anno_frame'])
+                        if self._loader.phase != "testing":
+                            visdata['anno_gt'] = calib.transform_objects(self._loader.annotation_3dobject(uidx), info['anno_frame'])
                     if seg is not None:
                         visdata['semantic_dt'] = seg['semantic_label']
                         visdata['semantic_scores'] = seg['semantic_scores']
-                        visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx, parse_tag=False)['semantic']
+                        if self._loader.phase != "testing":
+                            visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx)['semantic']
 
                     with open(osp.join(vis_path, "%06d.pkl" % i), "wb") as fout:
                         pickle.dump(visdata, fout)
@@ -330,7 +340,7 @@ class D3DDataset(Custom3DDataset):
                         self._loader.dump_detection_output(uidx, det, osp.join(sdet_path, "%06d.dump" % i), ranges={})
 
                     if seg is not None:
-                        self._loader.dump_segmentation_output(uidx, seg['semantic_label'], sseg_path)
+                        self._loader.dump_segmentation_output(uidx, seg['semantic_label'], sseg_path, raw2seg=False)
 
         return parsed_detections, parsed_segmentation
 
@@ -368,8 +378,7 @@ class D3DDataset(Custom3DDataset):
         if 'segm' in metric:
             iou_list = []
             valid_ids = np.zeros(128, dtype=bool) # 128 labels at most
-            for id in self.CLASSES_PTS:
-                valid_ids[id] = True
+            valid_ids[self.CLASSES_PTS] = True
 
             print_log('Calculating eval metrics for semantic segmentation', logger=logger)
             for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
@@ -552,5 +561,5 @@ def d3d_data_prep_official_val(ds_name, root_path, info_prefix, out_dir=None, in
     mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug, with_label=False), info_path)
 
 if __name__ == "__main__":
-    # d3d_data_prep("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95)
-    d3d_data_prep_official_val("nuscenes", "/mnt/storage8t/jacobz/nuscenes_converted", "d3d_nuscenes")
+    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95, debug=True)
+    # d3d_data_prep_official_val("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes")

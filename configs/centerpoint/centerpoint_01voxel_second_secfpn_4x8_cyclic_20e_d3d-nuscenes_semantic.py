@@ -12,8 +12,8 @@ class_names = [
 # directly specify class mapping. 
 seg_mapping = [ 0,  0,  7,  7,  7,  0,  7,  0,  0,  1,  0,  0,  8,  0,  2,  3,  3,
         4,  5,  0,  0,  6,  9, 10, 11, 12, 13, 14, 15,  0, 16,  0]
+seg_nclasses = max(seg_mapping)+1 # including background
 seg_mapping = [i-1 for i in seg_mapping] # valid label are all subtracted by 1 to prevent 0 as background
-seg_nclasses = max(seg_mapping) + 2
 seg_class_ids = list(range(1, seg_nclasses)) # used to reverse mapping
 
 dataset_type = 'nuscenes'

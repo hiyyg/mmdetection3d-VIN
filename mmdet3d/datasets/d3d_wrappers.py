@@ -1,19 +1,19 @@
 '''
 This file provides dataset interfaces with d3d as backend
 '''
-import d3d
 import mmcv
 import msgpack
 import msgpack_numpy
+
 msgpack_numpy.patch()
 import numpy as np
 import os.path as osp
-import torch
-from torch.utils.data import dataset
-import tqdm
 import pickle
-from d3d.abstraction import ObjectTag, ObjectTarget3D, Target3DArray, EgoPose, TrackingTarget3D
-from d3d.benchmarks import DetectionEvaluator
+import torch
+import tqdm
+from d3d.abstraction import (EgoPose, ObjectTag, ObjectTarget3D, Target3DArray,
+                             TrackingTarget3D)
+from d3d.benchmarks import DetectionEvaluator, SegmentationEvaluator
 from d3d.box import box3dp_crop
 from d3d.dataset.base import DetectionDatasetBase, TrackingDatasetBase
 from d3d.dataset.kitti import KittiObjectLoader
@@ -85,16 +85,15 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
             if len(objects) == 0:
                 continue
             objects = calib.transform_objects(objects, lidar_name)
-            box_arr = objects.to_numpy()
             
             # calculate number of points in the boxes
             cloud = loader.lidar_data(i, names=lidar_name)
-            box_arr_torch = torch.tensor(box_arr[:, 2:9], dtype=torch.float32)
-            mask = box3dp_crop(torch.tensor(cloud), box_arr_torch)
-            npts = mask.sum(dim=1)
+            mask = objects.crop_points(cloud)
+            npts = np.sum(mask, axis=1)
             annos['num_lidar_pts'] = npts.tolist()
 
             # adapt box params to mmdet3d coordinate
+            box_arr = objects.to_numpy()
             box_arr[:, 4] -= box_arr[:, 7] / 2 # move center to box bottom
             box_arr[:, [6,5]] = box_arr[:, [5,6]].copy() # swap l and w
             box_arr[:, 8] = -(box_arr[:, 8] + np.pi / 2) # change yaw angle zero direction
@@ -231,7 +230,7 @@ class D3DDataset(Custom3DDataset):
 
         return input_dict
 
-    def format_results(self, outputs, dump_prefix=None, dump_visual=False, dump_submission=False, score_threshold=0.4):
+    def format_results(self, outputs, dump_prefix=None, dump_visual=False, dump_submission=False, score_threshold=0.4, iterative=False):
         """Convert 3D detection results to d3d TargetArray format
         
         Args:
@@ -241,108 +240,108 @@ class D3DDataset(Custom3DDataset):
         """
         assert isinstance(outputs, list), 'outputs must be a list (current type: %s)' % str(type(outputs))
 
-        parsed_detections = []
-        parsed_segmentation = []
-
-        avel = [float('nan')] * 3 # dummy angular velocity
-        for idx, result in enumerate(outputs):
-            if 'pts_bbox' in result: # this is the case with CenterNet output
-                bbox_result = result.pop('pts_bbox')
-            else:
-                bbox_result = result
-
-            # parse object detection result
-            detections = Target3DArray(frame=self.data_infos[idx]['anno_frame'])
-            boxes_3d = bbox_result.pop('boxes_3d').tensor.tolist()
-            scores_3d = bbox_result.pop('scores_3d').tolist()
-            labels_3d = bbox_result.pop('labels_3d').tolist()
-            for box, score, label in zip(boxes_3d, scores_3d, labels_3d):
-                position = box[:3]
-                dimension = box[3:6]
-
-                # adapt back from mmdet3d format
-                position[2] += dimension[2] / 2
-                dimension[0], dimension[1] = dimension[1], dimension[0]
-                rotation = Rotation.from_euler("Z", -box[6] - np.pi / 2)
-
-                tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
-
-                if len(box) > 7: # with velocity output
-                    vel = [box[7], box[8], 0.0]
-                    detections.append(TrackingTarget3D(position, rotation, dimension, vel, avel, tag))
-                else:
-                    detections.append(ObjectTarget3D(position, rotation, dimension, tag))
-            parsed_detections.append(detections)
-
-            # parse segmentation result
-            if result.get('pts_pointwise', None) is not None:
-                semantic_result = result.pop('pts_pointwise')
-                scores = semantic_result.pop('semantic_scores').numpy()
-                label = semantic_result.pop('semantic_label').numpy()
-                label = self.CLASSES_PTS[label]
-                parsed_segmentation.append(dict(semantic_scores=scores, semantic_label=label))
-            else:
-                parsed_segmentation.append(None)
-
-        outputs.clear() # save memory
+        packer = msgpack.Packer(use_single_float=True)
+        
         if dump_prefix is not None:
             mmcv.mkdir_or_exist(dump_prefix)
-            print('Dumping results')
-            packer = msgpack.Packer(use_single_float=True)
-            with open(osp.join(dump_prefix, "detection_results.msg"), "wb") as fout:
-                fout.write(packer.pack_array_header(len(parsed_detections)))
-                for det in parsed_detections: # stream packing
-                    fout.write(packer.pack(det.serialize()))
-            if parsed_segmentation[0] is not None:
-                with open(osp.join(dump_prefix, "segmentation_results.msg"), "wb") as fout:
-                    fout.write(packer.pack_array_header(len(parsed_segmentation)))
-                    for seg in parsed_segmentation: # stream packing
-                        fout.write(packer.pack(seg))
+            det_fout = open(osp.join(dump_prefix, "detection_results.msg"), "wb")
+            det_fout.write(packer.pack_array_header(len(outputs)))
+            seg_fout = open(osp.join(dump_prefix, "segmentation_results.msg"), "wb")
+            seg_fout.write(packer.pack_array_header(len(outputs)))
 
-            # save visualization results
-            if dump_visual:
-                vis_path = osp.join(dump_prefix, "visual")
-                mmcv.mkdir_or_exist(vis_path)
+        if dump_visual:
+            vis_path = osp.join(dump_prefix, "visual")
+            mmcv.mkdir_or_exist(vis_path)
 
-                print('Dumping visualization files')
-                for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-                    uidx = info['uidx']
-                    cloud = self._loader.lidar_data(uidx)[:, :4]
-                    visdata = dict(cloud=cloud)
-                    det, seg = parsed_detections[i], parsed_segmentation[i]
+        if dump_submission:
+            sdet_path = osp.join(dump_prefix, "submission_detection")
+            sseg_path = osp.join(dump_prefix, "submission_segmentation")
+            mmcv.mkdir_or_exist(sdet_path)
+            mmcv.mkdir_or_exist(sseg_path)
 
-                    if det is not None:
-                        calib = self._loader.calibration_data(uidx)
-                        visdata['anno_dt'] = calib.transform_objects(det, info['anno_frame']).filter_score(score_threshold)
-                        if self._loader.phase != "testing":
-                            visdata['anno_gt'] = calib.transform_objects(self._loader.annotation_3dobject(uidx), info['anno_frame'])
-                    if seg is not None:
-                        visdata['semantic_dt'] = seg['semantic_label']
-                        visdata['semantic_scores'] = seg['semantic_scores']
-                        if self._loader.phase != "testing":
-                            visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx)['semantic']
+        def parse():
+            avel = [float('nan')] * 3 # dummy angular velocity
+            for idx, result in enumerate(outputs):
+                if 'pts_bbox' in result: # this is the case with CenterNet output
+                    bbox_result = result.pop('pts_bbox')
+                else:
+                    bbox_result = result
 
-                    with open(osp.join(vis_path, "%06d.pkl" % i), "wb") as fout:
-                        pickle.dump(visdata, fout)
+                # parse object detection result
+                detections = Target3DArray(frame=self.data_infos[idx]['anno_frame'])
+                boxes_3d = bbox_result.pop('boxes_3d').tensor.tolist()
+                scores_3d = bbox_result.pop('scores_3d').tolist()
+                labels_3d = bbox_result.pop('labels_3d').tolist()
+                for box, score, label in zip(boxes_3d, scores_3d, labels_3d):
+                    position = box[:3]
+                    dimension = box[3:6]
 
-            if dump_submission:
-                sdet_path = osp.join(dump_prefix, "submission_detection")
-                sseg_path = osp.join(dump_prefix, "submission_segmentation")
-                mmcv.mkdir_or_exist(sdet_path)
-                mmcv.mkdir_or_exist(sseg_path)
+                    # adapt back from mmdet3d format
+                    position[2] += dimension[2] / 2
+                    dimension[0], dimension[1] = dimension[1], dimension[0]
+                    rotation = Rotation.from_euler("Z", -box[6] - np.pi / 2)
 
-                print('Dumping submission files')
-                for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-                    uidx = info['uidx']
-                    det, seg = parsed_detections[i], parsed_segmentation[i]
+                    tag = ObjectTag(self.CLASSES[label], self._loader.VALID_OBJ_CLASSES, score)
 
-                    if det is not None:
-                        self._loader.dump_detection_output(uidx, det, osp.join(sdet_path, "%06d.dump" % i), ranges={})
+                    if len(box) > 7: # with velocity output
+                        vel = [box[7], box[8], 0.0]
+                        detections.append(TrackingTarget3D(position, rotation, dimension, vel, avel, tag))
+                    else:
+                        detections.append(ObjectTarget3D(position, rotation, dimension, tag))
 
-                    if seg is not None:
-                        self._loader.dump_segmentation_output(uidx, seg['semantic_label'], sseg_path, raw2seg=False)
+                # parse segmentation result
+                if result.get('pts_pointwise', None) is not None:
+                    semantic_result = result.pop('pts_pointwise')
+                    scores = semantic_result.pop('semantic_scores').numpy()
+                    label = semantic_result.pop('semantic_label').numpy()
+                    label = self.CLASSES_PTS[label]
+                    segmentations = dict(semantic_scores=scores, semantic_label=label)
+                else:
+                    segmentations = None
 
-        return parsed_detections, parsed_segmentation
+                if dump_prefix is not None:
+                    det_fout.write(packer.pack(detections.serialize()))
+                    seg_fout.write(packer.pack(segmentations))
+                    uidx = self.data_infos[idx]['uidx']
+
+                    # save visualization results
+                    if dump_visual:
+                        cloud = self._loader.lidar_data(uidx)[:, :4]
+                        visdata = dict(cloud=cloud)
+
+                        if detections is not None:
+                            calib = self._loader.calibration_data(uidx)
+                            visdata['anno_dt'] = calib.transform_objects(detections.filter_score(score_threshold), self._loader.VALID_LIDAR_NAMES[0])
+                            if self._loader.phase != "testing":
+                                visdata['anno_gt'] = calib.transform_objects(self._loader.annotation_3dobject(uidx),  self._loader.VALID_LIDAR_NAMES[0])
+                        if segmentations is not None:
+                            visdata['semantic_dt'] = segmentations['semantic_label']
+                            visdata['semantic_scores'] = segmentations['semantic_scores']
+                            if self._loader.phase != "testing":
+                                visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx)['semantic']
+                            visdata['semantic_colormap'] = [l.color for l in self._loader.VALID_PTS_CLASSES]
+
+                        with open(osp.join(vis_path, "%06d.pkl" % idx), "wb") as fout:
+                            pickle.dump(visdata, fout)
+
+                    # save submission file for official eval
+                    if dump_submission:
+                        if detections is not None:
+                            self._loader.dump_detection_output(uidx, detections, osp.join(sdet_path, "%06d.dump" % idx), ranges={})
+
+                        if segmentations is not None:
+                            self._loader.dump_segmentation_output(uidx, segmentations['semantic_label'], sseg_path, raw2seg=False)
+
+                yield detections, segmentations
+
+            if dump_prefix is not None:
+                det_fout.close()
+                seg_fout.close()
+
+        if iterative:
+            return parse()
+        else:
+            return list(parse())
 
     def evaluate(self,
                  results,
@@ -352,56 +351,46 @@ class D3DDataset(Custom3DDataset):
                  dump_visual=False,
                  dump_submission=False):
 
-        results_dict = dict()
-        anno_dt_list, anno_seg_list = self.format_results(results, dump_prefix=dump_prefix,
-            dump_visual=dump_visual, dump_submission=dump_submission)
-        message = "Eval completed"
-
         if 'bbox' in metric:
             classes = [self._loader.VALID_OBJ_CLASSES[name] for name in self.CLASSES]
-            evaluator = DetectionEvaluator(classes, 0.7)
+            deval = DetectionEvaluator(classes, 0.7)
 
-            print_log('Calculating eval metrics for object detection', logger=logger)
-            for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-                anno_gt = self._loader.annotation_3dobject(info['uidx'])
-                calib = self._loader.calibration_data(info['uidx'])
-                anno_dt = anno_dt_list[i]
-                stats = evaluator.calc_stats(anno_gt, anno_dt, calib)
-                evaluator.add_stats(stats)
+        if 'segm' in metric:
+            seval = SegmentationEvaluator([self._loader.VALID_PTS_CLASSES(i) for i in self.CLASSES_PTS])
 
+        results_dict = dict()
+        formatted = self.format_results(results, dump_prefix=dump_prefix, dump_visual=dump_visual, dump_submission=dump_submission, iterative=True)
+        for i, (pred_det, pred_seg) in enumerate(tqdm.tqdm(formatted, total=len(results), desc="Evaluating")):
+            uidx = self.data_infos[i]['uidx']
+
+            if 'bbox' in metric:
+                gt_det = self._loader.annotation_3dobject(uidx)
+                calib = self._loader.calibration_data(uidx)
+                stats = deval.calc_stats(gt_det, pred_det, calib)
+                deval.add_stats(stats)
+
+            if 'segm' in metric:
+                gt_seg = self._loader.annotation_3dpoints(uidx)
+                stats = seval.calc_stats(gt_seg.semantic, pred_seg['semantic_label'])
+                seval.add_stats(stats)
+
+        message = "Eval completed"
+        if 'bbox' in metric:
             aps = []
-            for k, v in evaluator.ap().items():
+            for k, v in deval.ap().items():
+                if np.isnan(v):
+                    continue
                 aps.append(v)
                 results_dict["AP/" + k.name] = v
             message += ", mAP: %.2f%%" % (np.mean(aps) * 100)
 
         if 'segm' in metric:
-            iou_list = []
-            valid_ids = np.zeros(128, dtype=bool) # 128 labels at most
-            valid_ids[self.CLASSES_PTS] = True
-
-            print_log('Calculating eval metrics for semantic segmentation', logger=logger)
-            for i, info in enumerate(mmcv.track_iter_progress(self.data_infos)):
-                anno_seg = anno_seg_list[i] # estimated
-                if anno_seg is not None:
-                    if 'raw' in metric:
-                        anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'], parse_tag=False)['semantic']
-                    else:
-                        anno_seg_gt = self._loader.annotation_3dpoints(info['uidx'])['semantic']
-                    anno_seg_id = anno_seg.pop('semantic_label')
-                    assert len(anno_seg_id) == len(anno_seg_gt)
-
-                    # only evaluate trained id
-                    valid_mask = valid_ids[anno_seg_gt]
-                    anno_seg_gt = anno_seg_gt[valid_mask]
-                    anno_seg_id = anno_seg_id[valid_mask]
-                    tp = np.sum(anno_seg_id == anno_seg_gt)
-                    iou = tp / (len(anno_seg_gt)*2 - tp)
-                    iou_list.append(iou)
-
-            if iou_list:
-                results_dict["mIoU"] = np.mean(iou_list)
-                message += ", mIoU: %.2f%%" % (results_dict["mIoU"] * 100)
+            ious = []
+            for k, v in seval.iou().items():
+                if not np.isnan(v):
+                    ious.append(v)
+                    results_dict["IoU/" + k.name] = v
+            message += ", mIoU: %.2f%%" % (np.mean(ious) * 100)
 
         print(message)
         return results_dict
@@ -423,7 +412,7 @@ class D3DDataset(Custom3DDataset):
 
 def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
     trainval_split=0.8, inzip=False, lidar_name=0, debug=False,
-    database_save_path=None, db_info_save_path=None):
+    database_save_path=None, db_generate=False, db_info_save_path=None):
     ds_type = resolve_dataset_type(ds_name)
     seed = int(str(random())[2:])
     if isinstance(lidar_name, int):
@@ -452,13 +441,14 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
 
     # Creating dataset ground-truth sampler
     try:
-        from tools.data_converter.create_gt_database import create_groundtruth_database
+        from tools.data_converter.create_gt_database import \
+            create_groundtruth_database
     except ImportError:
         print("Cannot import tools. Groundtruth database won't be created!")
         return
 
-    # set up pipelines
-    if not debug:
+    if not debug and db_generate:
+        # set up pipelines
         file_client_args = dict(backend='disk')
         if ds_name == 'kitti':
             pipeline = [
@@ -516,50 +506,5 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                                     database_save_path=database_save_path,
                                     db_info_save_path=db_info_save_path, with_mask_3d=True)
 
-def d3d_data_prep_official_val(ds_name, root_path, info_prefix, out_dir=None, inzip=False, lidar_name=0, debug=False):
-    '''
-    Create anno_info of official validation set for testing (without label)
-    '''
-    ds_type = resolve_dataset_type(ds_name)
-    if isinstance(lidar_name, int):
-        lidar_name = ds_type.VALID_LIDAR_NAMES[lidar_name]
-    if out_dir is None:
-        out_dir = root_path
-    if debug and not info_prefix.endswith("debug"):
-        info_prefix += "_debug"
-
-    # get official splits
-    ds_name = ds_name.lower()
-    if ds_name == "nuscenes":
-        val_split = ['scene-0003', 'scene-0012', 'scene-0013', 'scene-0014', 'scene-0015', 'scene-0016', 'scene-0017', 'scene-0018',
-                     'scene-0035', 'scene-0036', 'scene-0038', 'scene-0039', 'scene-0092', 'scene-0093', 'scene-0094', 'scene-0095',
-                     'scene-0096', 'scene-0097', 'scene-0098', 'scene-0099', 'scene-0100', 'scene-0101', 'scene-0102', 'scene-0103',
-                     'scene-0104', 'scene-0105', 'scene-0106', 'scene-0107', 'scene-0108', 'scene-0109', 'scene-0110', 'scene-0221',
-                     'scene-0268', 'scene-0269', 'scene-0270', 'scene-0271', 'scene-0272', 'scene-0273', 'scene-0274', 'scene-0275',
-                     'scene-0276', 'scene-0277', 'scene-0278', 'scene-0329', 'scene-0330', 'scene-0331', 'scene-0332', 'scene-0344',
-                     'scene-0345', 'scene-0346', 'scene-0519', 'scene-0520', 'scene-0521', 'scene-0522', 'scene-0523', 'scene-0524',
-                     'scene-0552', 'scene-0553', 'scene-0554', 'scene-0555', 'scene-0556', 'scene-0557', 'scene-0558', 'scene-0559',
-                     'scene-0560', 'scene-0561', 'scene-0562', 'scene-0563', 'scene-0564', 'scene-0565', 'scene-0625', 'scene-0626',
-                     'scene-0627', 'scene-0629', 'scene-0630', 'scene-0632', 'scene-0633', 'scene-0634', 'scene-0635', 'scene-0636',
-                     'scene-0637', 'scene-0638', 'scene-0770', 'scene-0771', 'scene-0775', 'scene-0777', 'scene-0778', 'scene-0780',
-                     'scene-0781', 'scene-0782', 'scene-0783', 'scene-0784', 'scene-0794', 'scene-0795', 'scene-0796', 'scene-0797',
-                     'scene-0798', 'scene-0799', 'scene-0800', 'scene-0802', 'scene-0904', 'scene-0905', 'scene-0906', 'scene-0907',
-                     'scene-0908', 'scene-0909', 'scene-0910', 'scene-0911', 'scene-0912', 'scene-0913', 'scene-0914', 'scene-0915',
-                     'scene-0916', 'scene-0917', 'scene-0919', 'scene-0920', 'scene-0921', 'scene-0922', 'scene-0923', 'scene-0924',
-                     'scene-0925', 'scene-0926', 'scene-0927', 'scene-0928', 'scene-0929', 'scene-0930', 'scene-0931', 'scene-0962',
-                     'scene-0963', 'scene-0966', 'scene-0967', 'scene-0968', 'scene-0969', 'scene-0971', 'scene-0972', 'scene-1059',
-                     'scene-1060', 'scene-1061', 'scene-1062', 'scene-1063', 'scene-1064', 'scene-1065', 'scene-1066', 'scene-1067',
-                     'scene-1068', 'scene-1069', 'scene-1070', 'scene-1071', 'scene-1072', 'scene-1073']
-        by_seq = True
-    else:
-        raise ValueError("Dataset name not supported!")
-
-    # Creating info for validation set, but without labels
-    val_loader = ds_type(root_path, inzip=inzip, phase="validation",
-        trainval_split=val_split, trainval_byseq=by_seq)
-    info_path = Path(root_path, f'{info_prefix}_infos_valtest.pkl')
-    mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug, with_label=False), info_path)
-
 if __name__ == "__main__":
-    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split=0.95, debug=True)
-    # d3d_data_prep_official_val("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes")
+    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes_official", trainval_split="official")

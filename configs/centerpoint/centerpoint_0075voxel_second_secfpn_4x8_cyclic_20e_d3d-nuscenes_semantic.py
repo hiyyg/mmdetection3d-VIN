@@ -65,7 +65,7 @@ train_pipeline = [
         with_seg_3d='u1'),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=4, # TODO(zyxin): dynamic number of sweeps
+        sweeps_num=10,
         use_dim=[0, 1, 2, 3, 4],
         remove_close=True,
         file_client_args=file_client_args),
@@ -100,7 +100,7 @@ test_pipeline = [
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=4,
+        sweeps_num=10,
         use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
@@ -155,4 +155,3 @@ data = dict(
     test=dict(pipeline=test_pipeline))
 
 evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_0075voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic')
-total_epochs = 40

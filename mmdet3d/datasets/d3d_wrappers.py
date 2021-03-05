@@ -511,4 +511,4 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                                     db_info_save_path=db_info_save_path, with_mask_3d=True)
 
 if __name__ == "__main__":
-    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes_official", trainval_split="official", db_generate=True)
+    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes", trainval_split="official", db_generate=True)

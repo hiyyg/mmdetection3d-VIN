@@ -55,7 +55,7 @@ train_pipeline = [
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=10, # TODO(zyxin): dynamic number of sweeps
+        sweeps_num=10,
         use_dim=[0, 1, 2, 3, 4],
         remove_close=True,
         file_client_args=file_client_args),
@@ -120,7 +120,7 @@ data = dict(
             type="D3DDataset",
             ds_type=dataset_type,
             data_root=data_root,
-            ann_file=data_root + 'd3d_nuscenes_official_infos_train.pkl',
+            ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
             phase='training',
             pipeline=train_pipeline,
             obj_classes=class_names,
@@ -154,3 +154,4 @@ data = dict(
         test_mode=True))
 
 evaluation = dict(interval=1)
+total_epochs = 20

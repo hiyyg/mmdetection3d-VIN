@@ -69,7 +69,7 @@ train_pipeline = [
         with_seg_3d='u1'),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=4, # TODO(zyxin): dynamic number of sweeps
+        sweeps_num=10,
         use_dim=[0, 1, 2, 3, 4],
         remove_close=True,
         file_client_args=file_client_args),
@@ -104,7 +104,7 @@ test_pipeline = [
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=4,
+        sweeps_num=10,
         use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
@@ -149,15 +149,17 @@ data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
     train=dict(
-        type="D3DDataset",
-        ds_type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
-        phase='training',
-        pipeline=train_pipeline,
-        obj_classes=class_names,
-        pts_classes=seg_class_ids,
-        test_mode=False),
+        type='CBGSDataset',
+        dataset=dict(
+            type="D3DDataset",
+            ds_type=dataset_type,
+            data_root=data_root,
+            ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
+            phase='training',
+            pipeline=train_pipeline,
+            obj_classes=class_names,
+            pts_classes=seg_class_ids,
+            test_mode=False)),
     val=dict(
         type="D3DDataset",
         ds_type=dataset_type,
@@ -194,4 +196,3 @@ train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
 evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic')
-total_epochs = 40

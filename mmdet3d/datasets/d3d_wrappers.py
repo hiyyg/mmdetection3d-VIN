@@ -123,6 +123,7 @@ class D3DDataset(Custom3DDataset):
                  obj_classes=None,
                  pts_classes=None,
                  filter_empty_gt=True,
+                 filter_ignore=True, # skip boxes with classid = 0
                  test_mode=False,
 
                  lidar_name=0,
@@ -160,13 +161,11 @@ class D3DDataset(Custom3DDataset):
             filter_empty_gt=filter_empty_gt,
             test_mode=test_mode
         )
+        self.filter_ignore = filter_ignore
         self.CLASSES_PTS = pts_classes or []
         assert len(self.CLASSES_PTS) < 255
         # use 0 as background and unknown class
         self.CLASSES_PTS = np.array(self.CLASSES_PTS + [0], dtype='u1')
-
-        # store box dimension in case it's not full
-        self._box_dimension = None
 
     def get_data_info(self, index):
         sample_idx = self.data_infos[index]["uidx"]
@@ -194,12 +193,15 @@ class D3DDataset(Custom3DDataset):
             if annos['arr']:
                 box_arr = np.array(annos['arr'])
             else:
-                box_arr = np.empty((0, self._box_dimension))
+                return None
+            # filter boxes
+            if self.filter_empty_gt:
+                box_arr = box_arr[np.array(annos['num_lidar_pts']) > 0]
+            if self.filter_ignore:
+                box_arr = box_arr[box_arr[:, 0] > 0]
             if box_arr.shape[1] == 12: # with velocity
-                self._box_dimension = 12
                 gt_bboxes_3d = LiDARInstance3DBoxes(box_arr[:, 2:11], box_dim=9)
             else:
-                self._box_dimension = 9
                 gt_bboxes_3d = LiDARInstance3DBoxes(box_arr[:, 2:9], box_dim=7)
             gt_labels_3d, gt_names = [], []
             for cid in box_arr[:, 0].astype(int):
@@ -402,12 +404,14 @@ class D3DDataset(Custom3DDataset):
         annos = self.data_infos[idx]['annos']
 
         cat_ids = []
-        for box in annos['arr']:
+        for i, box in enumerate(annos['arr']):
+            if annos['num_lidar_pts'][i] == 0: # skip invalid boxes
+                continue
             cenum = self._loader.VALID_OBJ_CLASSES(int(box[0]))
             if cenum.name in self.CLASSES:
                 cat_ids.append(self.cat2id[cenum.name])
 
-        return cat_ids
+        return list(set(cat_ids))
 
 
 def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
@@ -507,4 +511,4 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                                     db_info_save_path=db_info_save_path, with_mask_3d=True)
 
 if __name__ == "__main__":
-    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes_official", trainval_split="official")
+    d3d_data_prep("nuscenes", "/mnt/cache2t/jacobz/nuscenes_converted", "d3d_nuscenes_official", trainval_split="official", db_generate=True)

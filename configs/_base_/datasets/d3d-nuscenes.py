@@ -154,4 +154,3 @@ data = dict(
         test_mode=True))
 
 evaluation = dict(interval=1)
-total_epochs = 20

@@ -15,6 +15,9 @@ seg_mapping = [ 0,  0,  7,  7,  7,  0,  7,  0,  0,  1,  0,  0,  8,  0,  2,  3,  
 seg_nclasses = max(seg_mapping)+1 # including background
 seg_mapping = [i-1 for i in seg_mapping] # valid label are all subtracted by 1 to prevent 0 as background
 seg_class_ids = list(range(1, seg_nclasses)) # used to reverse mapping
+seg_weights = [0.02973658, 0.00366505, 0.02091866, 0.06017512, 0.01199645,
+               0.00637299, 0.01483134, 0.0083645 , 0.02159539, 0.03879958, 0.1735529 ,
+               0.02851986, 0.08167537, 0.08172903, 0.13012404, 0.10793007, 0.18001308] # squared weights of class frequencies, note that last weight is for background class
 
 dataset_type = 'nuscenes'
 data_root = 'data/nuscenes_d3d/'
@@ -141,9 +144,11 @@ model = dict(
             num_classes=seg_nclasses,
             point_cloud_range=point_cloud_range,
             in_pts_channels=5),
-        loss_semantic=dict(
-            type="FocalLoss", use_sigmoid=True,
-            reduction='mean', loss_weight=6, pow=0.5)))
+        loss_semantic=dict(type="EnsembleLoss", losses=[
+            dict(type="ExpLogCrossEntropyLoss", gamma=0.3, loss_weight=1),
+            dict(type="ExpLogDiceLoss", gamma=0.3, loss_weight=1),
+            dict(type="LovaszLoss", loss_weight=1.5)
+        ], use_sigmoid=False)))
 
 data = dict(
     samples_per_gpu=4,

@@ -23,24 +23,27 @@ class SemanticHead(nn.Module):
                  num_classes,
                  point_cloud_range,
                  in_pts_channels=3,
-                 mlp_layer_nums=3,
-                 mlp_channels=256,
+                 mlp_channels=[256, 128, 64],
                  norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01),
                  **kwargs):
         super(SemanticHead, self).__init__()
 
-        _, norm_layer = build_norm_layer(norm_cfg, mlp_channels)
+        _, norm_layer = build_norm_layer(norm_cfg, mlp_channels[0])
         mlps = [
-            nn.Linear(in_feat_channels + in_pts_channels, mlp_channels, bias=False),
+            nn.Linear(in_feat_channels + in_pts_channels, mlp_channels[0], bias=False),
             norm_layer,
             nn.ReLU(inplace=True)
         ]
-        for _ in range(mlp_layer_nums - 1):
-            _, norm_layer = build_norm_layer(norm_cfg, mlp_channels)
-            mlps.append(nn.Linear(mlp_channels, mlp_channels))
-            mlps.append(norm_layer)
-            mlps.append(nn.ReLU(inplace=True))
-        mlps.append(nn.Linear(mlp_channels, num_classes))
+
+        for i in range(len(mlp_channels)-1):
+            _, norm_layer = build_norm_layer(norm_cfg, mlp_channels[i+1])
+            mlps.extend([
+                nn.Linear(mlp_channels[i], mlp_channels[i+1]),
+                norm_layer,
+                nn.ReLU(inplace=True)]
+            )
+
+        mlps.append(nn.Linear(mlp_channels[-1], num_classes))
         self.point_mlps = nn.Sequential(*mlps)
 
         self.point_cloud_range = point_cloud_range
@@ -341,7 +344,7 @@ class CenterHead(nn.Module):
                  loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
                  loss_bbox=dict(
                      type='L1Loss', reduction='none', loss_weight=0.25),
-                 loss_semantic=dict(type="FocalLoss", use_sigmoid=True, reduction='mean'),
+                 loss_semantic=dict(type="CrossEntropyLoss", use_sigmoid=False, reduction='mean'),
                  separate_head=dict(
                      type='SeparateHead', init_bias=-2.19, final_kernel=3),
                  semantic_head=None,
@@ -364,6 +367,7 @@ class CenterHead(nn.Module):
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
         self.loss_semantic_pow = loss_semantic.pop('pow', 1)
+        self.loss_semantic_sigmoid = loss_semantic['use_sigmoid']
         self.loss_semantic = build_loss(loss_semantic)
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.num_anchor_per_locs = [n for n in num_classes]
@@ -390,7 +394,7 @@ class CenterHead(nn.Module):
 
         if semantic_head is not None:
             semantic_head.update(
-                in_feat_channels=share_conv_channel)
+                in_feat_channels=in_channels)
             self.semantic_head = builder.build_head(semantic_head)
         else:
             self.semantic_head = None
@@ -421,7 +425,7 @@ class CenterHead(nn.Module):
 
         # append semantic result at the end
         if self.semantic_head:
-            ret_dicts.append(self.semantic_head(pts, x))
+            ret_dicts.append(self.semantic_head(pts, feats))
 
         return ret_dicts
 
@@ -721,7 +725,10 @@ class CenterHead(nn.Module):
         pt_counter = 0
         preds = preds[0].detach().cpu()
 
-        max_result = preds.sigmoid().max(dim=1)
+        if self.loss_semantic_sigmoid:
+            max_result = preds.sigmoid().max(dim=1)
+        else:
+            max_result = preds.softmax(dim=1).max(dim=1)
         semantic_label = max_result.indices.char() # use int8 to reduce memory footprint
         semantic_scores = max_result.values
 

@@ -97,17 +97,6 @@ train_pipeline = [
 data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
-    train=dict(
-        type='CBGSDataset',
-        dataset=dict(
-            type="D3DDataset",
-            ds_type=dataset_type,
-            data_root=data_root,
-            ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
-            phase='training',
-            pipeline=train_pipeline,
-            obj_classes=class_names,
-            pts_classes=seg_class_ids,
-            test_mode=False)))
+    train=dict(dataset=dict(pipeline=train_pipeline)))
 
-evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic-sampled')
+evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic-augmented')

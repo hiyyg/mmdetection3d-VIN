@@ -38,7 +38,7 @@ class SemanticHead(nn.Module):
         for i in range(len(mlp_channels)-1):
             _, norm_layer = build_norm_layer(norm_cfg, mlp_channels[i+1])
             mlps.extend([
-                nn.Linear(mlp_channels[i], mlp_channels[i+1]),
+                nn.Linear(mlp_channels[i], mlp_channels[i+1], bias=False),
                 norm_layer,
                 nn.ReLU(inplace=True)]
             )

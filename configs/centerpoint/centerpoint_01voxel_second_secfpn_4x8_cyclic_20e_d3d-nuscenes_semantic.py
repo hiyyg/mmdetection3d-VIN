@@ -143,6 +143,7 @@ model = dict(
             type='SemanticHead',
             num_classes=seg_nclasses,
             point_cloud_range=point_cloud_range,
+            mlp_channels=[256, 128, 64, 32],
             in_pts_channels=5),
         loss_semantic=dict(type="EnsembleLoss", losses=[
             dict(type="ExpLogCrossEntropyLoss", gamma=0.3, loss_weight=1),
@@ -153,48 +154,9 @@ model = dict(
 data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
-    train=dict(
-        type='CBGSDataset',
-        dataset=dict(
-            type="D3DDataset",
-            ds_type=dataset_type,
-            data_root=data_root,
-            ann_file=data_root + 'd3d_nuscenes_infos_train.pkl',
-            phase='training',
-            pipeline=train_pipeline,
-            obj_classes=class_names,
-            pts_classes=seg_class_ids,
-            test_mode=False)),
-    val=dict(
-        type="D3DDataset",
-        ds_type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
-        phase='validation',
-        pipeline=test_pipeline,
-        obj_classes=class_names,
-        pts_classes=seg_class_ids,
-        test_mode=True),
-    # test=dict(
-    #     type="D3DDataset",
-    #     ds_type=dataset_type,
-    #     data_root=data_root,
-    #     ann_file=data_root + 'd3d_nuscenes_infos_test.pkl',
-    #     phase='testing',
-    #     pipeline=test_pipeline,
-    #     obj_classes=class_names,
-    #     pts_classes=seg_class_ids,
-    #     test_mode=True))
-    test=dict(
-        type="D3DDataset",
-        ds_type=dataset_type,
-        data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_valtest.pkl',
-        phase='validation',
-        pipeline=test_pipeline,
-        obj_classes=class_names,
-        pts_classes=seg_class_ids,
-        test_mode=True))
+    train=dict(dataset=dict(pts_classes=seg_class_ids, pipeline=train_pipeline)),
+    val=dict(pts_classes=seg_class_ids, pipeline=train_pipeline),
+    test=dict(pts_classes=seg_class_ids, pipeline=train_pipeline))
 
 # model training and testing settings
 train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))

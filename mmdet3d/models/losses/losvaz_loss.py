@@ -39,7 +39,7 @@ def lovasz_softmax_flat(probs, labels, classes='present', class_weight=None):
     """
     if probs.numel() == 0:
         # only void pixels, the gradients should be 0
-        return probs.sum() * 0.
+        return probs * 0.
     C = probs.size(1)
     losses = []
     class_to_sum = list(range(C)) if classes in ['all', 'present'] else classes
@@ -61,7 +61,6 @@ def lovasz_softmax_flat(probs, labels, classes='present', class_weight=None):
         if class_weight is not None:
             loss *= class_weight[c]
         losses.append(loss)
-
     return torch.stack(losses).mean()
 
 

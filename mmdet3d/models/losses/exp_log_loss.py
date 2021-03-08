@@ -6,20 +6,21 @@ from mmdet.models.losses.cross_entropy_loss import CrossEntropyLoss
 
 from ..builder import LOSSES
 
-def exp_log_dice_loss(probs, labels, gamma=1, reduction="mean", avg_factor=None):
-    dices = []
-    for c in range(probs.size(1)):
+def exp_log_dice_loss(log_probs, labels, gamma=1, reduction="mean", avg_factor=None):
+    log_dices = []
+    lg2 = 0.6931471805599453
+    for c in range(log_probs.size(1)):
         loc = labels == c
         ngt = loc.sum()
         if ngt == 0:
             continue
 
-        ni = probs[loc, c].sum()
-        npr = probs[loc, :].sum()
-        dice = 2*ni/(ngt + npr)
-        dices.append(dice)
+        ni = torch.logsumexp(log_probs[loc, c], dim=0)
+        npr = torch.logsumexp(log_probs[:, c], dim=0)
+        log_dice = lg2 + ni - torch.logaddexp(ngt.to(npr.dtype).log(), npr)
+        log_dices.append(log_dice)
 
-    losses = torch.stack(dices).log().neg().pow(gamma)
+    losses = torch.stack(log_dices).neg().pow(gamma)
     loss = weight_reduce_loss(losses, None, reduction, avg_factor)
     return loss
 
@@ -56,9 +57,9 @@ class ExpLogDiceLoss(nn.Module):
             reduction_override if reduction_override else self.reduction)
 
         assert not self.use_sigmoid
-        probs = cls_score.softmax(dim=1)
+        log_probs = cls_score.log_softmax(dim=1)
 
-        return exp_log_dice_loss(probs, label, self.gamma,
+        return exp_log_dice_loss(log_probs, label, self.gamma,
             reduction=reduction, avg_factor=avg_factor)
 
 @LOSSES.register_module()
@@ -115,13 +116,6 @@ class ExpLogCrossEntropyLoss(nn.Module):
         Returns:
             torch.Tensor: The calculated loss
         """
-        # loss = super().forward(
-        #     cls_score=cls_score,
-        #     label=label,
-        #     weight=weight,
-        #     avg_factor=avg_factor,
-        #     reduction_override=reduction_override,
-        #     **kwargs)
 
         assert reduction_override in (None, 'none', 'mean', 'sum')
         reduction = (

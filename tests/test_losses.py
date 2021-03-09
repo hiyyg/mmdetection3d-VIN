@@ -69,3 +69,38 @@ def test_chamfer_disrance():
             or torch.equal(indices1, indices1.new_tensor(expected_inds2)))
     assert (indices2 == indices2.new_tensor([[0, 0, 0, 0, 0], [0, 3, 6, 0,
                                                                0]])).all()
+
+def test_exp_log_loss():
+    from mmdet3d.models.losses import ExpLogCrossEntropyLoss, ExpLogDiceLoss
+
+    npts = 100
+    ncls = 10
+    gamma = 0.9
+    label = (torch.rand(npts) * ncls).long()
+    pred = torch.zeros(npts, ncls)
+    pred[torch.arange(npts), label] = 1e2
+
+    loss_ce = ExpLogCrossEntropyLoss(gamma=gamma)
+    assert torch.isclose(loss_ce(pred, label), torch.tensor(0.))
+
+    loss_dice = ExpLogDiceLoss(gamma=gamma)
+    assert torch.isclose(loss_dice(pred, label), torch.tensor(0.))
+
+    pred = torch.rand(npts, ncls)
+    assert torch.all(loss_ce(pred, label) > 0.01)
+    assert torch.all(loss_dice(pred, label) > 0.01)
+
+def test_lovasz_loss():
+    from mmdet3d.models.losses import LovaszLoss
+
+    npts = 100
+    ncls = 10
+    label = (torch.rand(npts) * ncls).long()
+    pred = torch.zeros(npts, ncls)
+    pred[torch.arange(npts), label] = 1e2
+
+    loss = LovaszLoss()
+    assert torch.isclose(loss(pred, label), torch.tensor(0.))
+
+    pred = torch.rand(npts, ncls)
+    assert torch.all(loss(pred, label) > 0.01)

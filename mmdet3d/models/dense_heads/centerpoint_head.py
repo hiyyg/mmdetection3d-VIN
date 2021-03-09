@@ -59,8 +59,6 @@ class SemanticHead(nn.Module):
             pts_feature (torch.float32): Features from voxel in shape (N, C, H, W).
                 H for y and W for x.
         """
-        # TODO(zyxin): consider adding convs for pts_feature
-
         # calculate point positions
         D = 1
         _, _, H, W = pts_feature.shape
@@ -72,7 +70,7 @@ class SemanticHead(nn.Module):
             x_coord = (pc[:, 0] - self.point_cloud_range[0]) * W // x_range
             y_coord = (pc[:, 1] - self.point_cloud_range[1]) * H // y_range
             z_coord = (pc[:, 2] - self.point_cloud_range[2]) * D // z_range
-            selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()]
+            selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()] # TODO: clamp x, y to accept points out side of grid
 
             # concatenate feature map
             pc[:, 0] -= x_coord / W * x_range

@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmdet.models.losses.utils import weight_reduce_loss
-from mmdet.models.losses.cross_entropy_loss import CrossEntropyLoss
 
 from ..builder import LOSSES
 
-def exp_log_dice_loss(log_probs, labels, gamma=1, reduction="mean", avg_factor=None):
+def exp_log_dice_loss(log_probs, labels, gamma=1, class_weight=None):
     log_dices = []
+    selected_weights = []
     lg2 = 0.6931471805599453
     for c in range(log_probs.size(1)):
         loc = labels == c
@@ -19,10 +19,14 @@ def exp_log_dice_loss(log_probs, labels, gamma=1, reduction="mean", avg_factor=N
         npr = torch.logsumexp(log_probs[:, c], dim=0)
         log_dice = lg2 + ni - torch.logaddexp(ngt.to(npr.dtype).log(), npr)
         log_dices.append(log_dice)
+        if class_weight is not None:
+            selected_weights.append(class_weight[c])
 
     losses = torch.stack(log_dices).neg().pow(gamma)
-    loss = weight_reduce_loss(losses, None, reduction, avg_factor)
-    return loss
+    if selected_weights:
+        selected_weights = log_probs.new_tensor(selected_weights)
+        losses = losses * selected_weights
+    return losses.mean()
 
 @LOSSES.register_module()
 class ExpLogDiceLoss(nn.Module):
@@ -42,8 +46,10 @@ class ExpLogDiceLoss(nn.Module):
         super().__init__()
         self.gamma = gamma
         self.use_sigmoid = use_sigmoid
+        assert not self.use_sigmoid
         self.reduction = reduction
-        self.loss_weight= loss_weight
+        self.class_weight = class_weight
+        self.loss_weight = loss_weight
 
     def forward(self,
                 cls_score,
@@ -52,15 +58,11 @@ class ExpLogDiceLoss(nn.Module):
                 avg_factor=None,
                 reduction_override=None,
                 **kwargs):
-        assert reduction_override in (None, 'none', 'mean', 'sum')
-        reduction = (
-            reduction_override if reduction_override else self.reduction)
 
-        assert not self.use_sigmoid
         log_probs = cls_score.log_softmax(dim=1)
 
-        return exp_log_dice_loss(log_probs, label, self.gamma,
-            reduction=reduction, avg_factor=avg_factor)
+        return self.loss_weight * exp_log_dice_loss(log_probs, label,
+            self.gamma, class_weight=self.class_weight)
 
 @LOSSES.register_module()
 class ExpLogCrossEntropyLoss(nn.Module):
@@ -90,6 +92,7 @@ class ExpLogCrossEntropyLoss(nn.Module):
         """
         super(ExpLogCrossEntropyLoss, self).__init__()
         self.use_sigmoid = use_sigmoid
+        assert not self.use_sigmoid
         self.use_mask = use_mask
         self.reduction = reduction
         self.loss_weight = loss_weight
@@ -121,8 +124,8 @@ class ExpLogCrossEntropyLoss(nn.Module):
         reduction = (
             reduction_override if reduction_override else self.reduction)
 
-        logits = F.log_softmax(cls_score, 1)[torch.arange(len(cls_score)), label]
-        logits = logits.neg().clamp_min(1e-8).pow(self.gamma)
+        logits = F.log_softmax(cls_score, 1).gather(1, label.unsqueeze(1)).squeeze()
+        logits = logits.neg().clamp_min(1e-9).pow(self.gamma)
         
         if self.class_weight is not None:
             class_weight = cls_score.new_tensor(self.class_weight)

@@ -82,25 +82,24 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
 
             # parse array of objects
             objects = loader.annotation_3dobject(i)
-            if len(objects) == 0:
-                continue
-            objects = calib.transform_objects(objects, lidar_name)
-            
-            # calculate number of points in the boxes
-            cloud = loader.lidar_data(i, names=lidar_name)
-            mask = objects.crop_points(cloud)
-            npts = np.sum(mask, axis=1)
-            annos['num_lidar_pts'] = npts.tolist()
+            if len(objects) != 0:
+                objects = calib.transform_objects(objects, lidar_name)
+                
+                # calculate number of points in the boxes
+                cloud = loader.lidar_data(i, names=lidar_name)
+                mask = objects.crop_points(cloud)
+                npts = np.sum(mask, axis=1)
+                annos['num_lidar_pts'] = npts.tolist()
 
-            # adapt box params to mmdet3d coordinate
-            box_arr = objects.to_numpy()
-            box_arr[:, 4] -= box_arr[:, 7] / 2 # move center to box bottom
-            box_arr[:, [6,5]] = box_arr[:, [5,6]].copy() # swap l and w
-            box_arr[:, 8] = -(box_arr[:, 8] + np.pi / 2) # change yaw angle zero direction
-            box_arr[:, 8] = (box_arr[:, 8] + np.pi) % (2*np.pi) - np.pi # wrap angles
-            annos['arr'] = box_arr.tolist()
+                # adapt box params to mmdet3d coordinate
+                box_arr = objects.to_numpy()
+                box_arr[:, 4] -= box_arr[:, 7] / 2 # move center to box bottom
+                box_arr[:, [6,5]] = box_arr[:, [5,6]].copy() # swap l and w
+                box_arr[:, 8] = -(box_arr[:, 8] + np.pi / 2) # change yaw angle zero direction
+                box_arr[:, 8] = (box_arr[:, 8] + np.pi) % (2*np.pi) - np.pi # wrap angles
+                annos['arr'] = box_arr.tolist()
 
-            metadata['annos'] = annos
+                metadata['annos'] = annos
 
         metalist.append(metadata)
 
@@ -355,7 +354,7 @@ class D3DDataset(Custom3DDataset):
 
         if 'bbox' in metric:
             classes = [self._loader.VALID_OBJ_CLASSES[name] for name in self.CLASSES]
-            deval = DetectionEvaluator(classes, 0.7)
+            deval = DetectionEvaluator(classes, 0.5, pr_sample_count=16)
 
         if 'segm' in metric:
             seval = SegmentationEvaluator([self._loader.VALID_PTS_CLASSES(i) for i in self.CLASSES_PTS])

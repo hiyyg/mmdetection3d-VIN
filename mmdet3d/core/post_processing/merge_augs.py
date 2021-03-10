@@ -89,3 +89,14 @@ def merge_aug_bboxes_3d(aug_results, img_metas, test_cfg):
     merged_labels = merged_labels[order]
 
     return bbox3d2result(merged_bboxes, merged_scores, merged_labels)
+
+def merge_aug_ptlabels_3d(aug_results, img_metas, test_cfg):
+    '''Merge augmented semantic segmentation 3D points and scores.
+    '''
+    labels = torch.stack([r['semantic_label'] for r in aug_results])
+    scores = torch.stack([r['semantic_scores'] for r in aug_results])
+    
+    max_result = scores.max(dim=0)
+    final_scores = max_result.values
+    final_labels = labels.gather(0, max_result.indices.unsqueeze(0)).squeeze()
+    return dict(semantic_label=final_labels, semantic_scores=final_scores)

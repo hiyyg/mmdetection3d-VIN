@@ -67,7 +67,7 @@ train_pipeline = [
         with_seg_3d='u1'),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=10,
+        sweeps_num=9,
         use_dim=[0, 1, 2, 3, 4],
         remove_close=True,
         file_client_args=file_client_args),

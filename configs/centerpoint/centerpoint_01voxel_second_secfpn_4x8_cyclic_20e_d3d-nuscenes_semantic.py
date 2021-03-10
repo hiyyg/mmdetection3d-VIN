@@ -69,7 +69,7 @@ train_pipeline = [
         with_seg_3d='u1'),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=10,
+        sweeps_num=9,
         use_dim=[0, 1, 2, 3, 4],
         remove_close=True,
         file_client_args=file_client_args),
@@ -104,7 +104,7 @@ test_pipeline = [
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=10,
+        sweeps_num=9,
         use_dim=[0, 1, 2, 3, 4],
         file_client_args=file_client_args),
     dict(
@@ -184,7 +184,7 @@ data = dict(
         type="D3DDataset",
         ds_type=dataset_type,
         data_root=data_root,
-        ann_file=data_root + 'd3d_nuscenes_infos_valtest.pkl',
+        ann_file=data_root + 'd3d_nuscenes_infos_val.pkl',
         phase='validation',
         pipeline=test_pipeline,
         obj_classes=class_names,

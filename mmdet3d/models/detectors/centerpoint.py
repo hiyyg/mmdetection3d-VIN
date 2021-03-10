@@ -1,6 +1,6 @@
 import torch
 
-from mmdet3d.core import bbox3d2result, merge_aug_bboxes_3d
+from mmdet3d.core import bbox3d2result, merge_aug_bboxes_3d, merge_aug_ptlabels_3d
 from mmdet.models import DETECTORS
 from .mvx_two_stage import MVXTwoStageDetector
 
@@ -99,7 +99,8 @@ class CenterPoint(MVXTwoStageDetector):
         ]
         return bbox_results, pts_results
 
-    def aug_test_pts(self, pts_feats, img_metas, rescale=False):
+    def aug_test_pts(self, points, pts_feats, img_metas, rescale=False,
+                     pts_of_interest_idx=None, pts_of_interest_revidx=None):
         """Test function of point cloud branch with augmentaiton.
 
         The function implementation process is as follows:
@@ -107,7 +108,8 @@ class CenterPoint(MVXTwoStageDetector):
             - step 1: map features back for double-flip augmentation.
             - step 2: merge all features and generate boxes.
             - step 3: map boxes back for scale augmentation.
-            - step 4: merge results.
+            - step 4: merge box results.
+            - step 5: merge point semantic results
 
         Args:
             pts_feats (list[torch.Tensor]): Feature of point cloud.
@@ -122,9 +124,19 @@ class CenterPoint(MVXTwoStageDetector):
                 - labels_3d (torch.Tensor): Labels of predicted boxes.
         """
         # only support aug_test for one sample
+        # step 1
         outs_list = []
-        for x, img_meta in zip(pts_feats, img_metas):
-            outs = self.pts_bbox_head(x)
+        pts_outs_list = [] # for semantic result
+
+        for i, (x, img_meta) in enumerate(zip(pts_feats, img_metas)):
+            outs = self.pts_bbox_head(points[i], x, pts_of_interest_idx=pts_of_interest_idx[i])
+
+            if getattr(self.pts_bbox_head, 'semantic_head', None) is not None:
+                semantic_feat = outs[-1]
+                outs = outs[:-1]
+                pts_outs_list.append(self.pts_bbox_head.get_semantic(
+                    points[i], semantic_feat, pts_of_interest_revidx[i])[0])
+
             # merge augmented outputs before decoding bboxes
             for task_id, out in enumerate(outs):
                 for key in out[0].keys():
@@ -159,6 +171,7 @@ class CenterPoint(MVXTwoStageDetector):
 
             outs_list.append(outs)
 
+        # step 2
         preds_dicts = dict()
         scale_img_metas = []
 
@@ -174,6 +187,7 @@ class CenterPoint(MVXTwoStageDetector):
                         preds_dicts[pcd_scale_factor][task_id][0][key] += out[
                             0][key]
 
+        # step 3
         aug_bboxes = []
 
         for pcd_scale_factor, preds_dict in preds_dicts.items():
@@ -190,23 +204,32 @@ class CenterPoint(MVXTwoStageDetector):
             ]
             aug_bboxes.append(bbox_list[0])
 
+        # step 4
         if len(preds_dicts.keys()) > 1:
             # merge outputs with different scales after decoding bboxes
-            merged_bboxes = merge_aug_bboxes_3d(aug_bboxes, scale_img_metas,
+            bbox_results = merge_aug_bboxes_3d(aug_bboxes, scale_img_metas,
                                                 self.pts_bbox_head.test_cfg)
-            return merged_bboxes
         else:
             for key in bbox_list[0].keys():
                 bbox_list[0][key] = bbox_list[0][key].to('cpu')
-            import pdb
-            pdb.set_trace()
-            return bbox_list[0]
+            bbox_results = bbox_list[0]
 
-    def aug_test(self, points, img_metas, imgs=None, rescale=False):
+        # step 5
+        if pts_outs_list:
+            pts_results = merge_aug_ptlabels_3d(pts_outs_list, img_metas, self.pts_bbox_head.test_cfg)
+        else:
+            pts_results = None
+
+        return bbox_results, pts_results
+
+    def aug_test(self, points, img_metas, imgs=None, rescale=False,
+                 pts_of_interest_idx=None, pts_of_interest_revidx=None):
         """Test function with augmentaiton."""
         img_feats, pts_feats = self.extract_feats(points, img_metas, imgs)
         bbox_list = dict()
         if pts_feats and self.with_pts_bbox:
-            pts_bbox = self.aug_test_pts(pts_feats, img_metas, rescale)
+            pts_bbox, pts_labels = self.aug_test_pts(points, pts_feats, img_metas, rescale,
+                pts_of_interest_idx, pts_of_interest_revidx)
             bbox_list.update(pts_bbox=pts_bbox)
+            bbox_list.update(pts_pointwise=pts_labels)
         return [bbox_list]

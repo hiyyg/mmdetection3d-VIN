@@ -30,7 +30,8 @@ class SECONDFPN(nn.Module):
                  norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
                  upsample_cfg=dict(type='deconv', bias=False),
                  conv_cfg=dict(type='Conv2d', bias=False),
-                 use_conv_for_no_stride=False):
+                 use_conv_for_no_stride=False,
+                 freeze=False):
         # if for GroupNorm,
         # cfg is dict(type='GN', num_groups=num_groups, eps=1e-3, affine=True)
         super(SECONDFPN, self).__init__()
@@ -63,6 +64,11 @@ class SECONDFPN(nn.Module):
                                     nn.ReLU(inplace=True))
             deblocks.append(deblock)
         self.deblocks = nn.ModuleList(deblocks)
+
+        if freeze:
+            self.eval()
+            for m in self.parameters():
+                m.requires_grad = False
 
     def init_weights(self):
         """Initialize weights of FPN."""

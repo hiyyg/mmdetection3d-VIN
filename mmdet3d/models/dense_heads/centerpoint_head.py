@@ -351,7 +351,8 @@ class CenterHead(nn.Module):
                  conv_cfg=dict(type='Conv2d'),
                  norm_cfg=dict(type='BN2d'),
                  bias='auto',
-                 norm_bbox=True):
+                 norm_bbox=True,
+                 freeze_bbox=False):
         super(CenterHead, self).__init__()
 
         num_classes = [len(t['class_names']) for t in tasks]
@@ -396,6 +397,16 @@ class CenterHead(nn.Module):
             self.semantic_head = builder.build_head(semantic_head)
         else:
             self.semantic_head = None
+
+        if freeze_bbox:
+            for task_head in self.task_heads:
+                task_head.eval()
+                for param in task_head.parameters():
+                    param.requires_grad = False
+
+            self.shared_conv.eval()
+            for param in self.shared_conv.parameters():
+                param.requires_grad = False
 
     def init_weights(self):
         """Initialize weights."""

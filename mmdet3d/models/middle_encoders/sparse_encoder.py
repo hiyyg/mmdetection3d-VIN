@@ -39,7 +39,8 @@ class SparseEncoder(nn.Module):
                                                                         64)),
                  encoder_paddings=((1, ), (1, 1, 1), (1, 1, 1), ((0, 1, 1), 1,
                                                                  1)),
-                 block_type='conv_module'):
+                 block_type='conv_module',
+                 freeze=False):
         super().__init__()
         assert block_type in ['conv_module', 'basicblock']
         self.sparse_shape = sparse_shape
@@ -91,6 +92,11 @@ class SparseEncoder(nn.Module):
             padding=0,
             indice_key='spconv_down2',
             conv_type='SparseConv3d')
+
+        if freeze:
+            self.eval()
+            for m in self.parameters():
+                m.requires_grad = False
 
     @auto_fp16(apply_to=('voxel_features', ))
     def forward(self, voxel_features, coors, batch_size):

@@ -5,6 +5,7 @@ import torch
 from torch.utils.cpp_extension import (BuildExtension, CppExtension,
                                        CUDAExtension)     
 from Cython.Build import cythonize
+import numpy
 
 
 def readme():
@@ -244,7 +245,7 @@ if __name__ == '__main__':
                 sources=['src/gather_points.cpp'],
                 sources_cuda=['src/gather_points_cuda.cu'])
         ] + cythonize([
-            Extension("mmdet3d.utils.plane_ransac", ["mmdet3d/utils/plane_ransac.pyx"])
+            Extension("mmdet3d.utils.plane_ransac", ["mmdet3d/utils/plane_ransac.pyx"], include_dirs=[numpy.get_include()])
         ]),
         cmdclass={'build_ext': BuildExtension},
         zip_safe=False)

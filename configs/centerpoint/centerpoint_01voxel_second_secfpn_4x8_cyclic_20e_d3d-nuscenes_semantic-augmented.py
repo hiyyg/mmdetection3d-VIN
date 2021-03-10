@@ -97,6 +97,6 @@ train_pipeline = [
 data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
-    train=dict(dataset=dict(pipeline=train_pipeline)))
+    train=dict(pipeline=train_pipeline))
 
 evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic-augmented')

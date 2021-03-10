@@ -158,9 +158,9 @@ model = dict(
 data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
-    train=dict(dataset=dict(pts_classes=seg_class_ids, pipeline=train_pipeline)),
-    val=dict(pts_classes=seg_class_ids, pipeline=train_pipeline),
-    test=dict(pts_classes=seg_class_ids, pipeline=train_pipeline))
+    train=dict(pts_classes=seg_class_ids, pipeline=train_pipeline),
+    val=dict(pts_classes=seg_class_ids, pipeline=test_pipeline),
+    test=dict(pts_classes=seg_class_ids, pipeline=test_pipeline))
 
 # model training and testing settings
 train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))

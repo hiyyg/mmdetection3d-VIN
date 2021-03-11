@@ -3,11 +3,12 @@ from torch import nn as nn
 
 from mmdet3d.ops import SparseBasicBlock, make_sparse_convmodule
 from mmdet3d.ops import spconv as spconv
+from mmdet3d.models.utils import FreezeMixin
 from ..registry import MIDDLE_ENCODERS
 
 
 @MIDDLE_ENCODERS.register_module()
-class SparseEncoder(nn.Module):
+class SparseEncoder(FreezeMixin, nn.Module):
     r"""Sparse encoder for SECOND and Part-A2.
 
     Args:
@@ -52,6 +53,7 @@ class SparseEncoder(nn.Module):
         self.encoder_paddings = encoder_paddings
         self.stage_num = len(self.encoder_channels)
         self.fp16_enabled = False
+        self.freeze = freeze
         # Spconv init all weight on its own
 
         assert isinstance(order, tuple) and len(order) == 3
@@ -92,11 +94,6 @@ class SparseEncoder(nn.Module):
             padding=0,
             indice_key='spconv_down2',
             conv_type='SparseConv3d')
-
-        if freeze:
-            self.eval()
-            for m in self.parameters():
-                m.requires_grad = False
 
     @auto_fp16(apply_to=('voxel_features', ))
     def forward(self, voxel_features, coors, batch_size):

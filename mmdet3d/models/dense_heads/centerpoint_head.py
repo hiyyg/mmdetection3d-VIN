@@ -9,7 +9,7 @@ from mmdet3d.core import (circle_nms, draw_heatmap_gaussian, gaussian_radius,
                           xywhr2xyxyr)
 from mmdet3d.models import builder
 from mmdet3d.models.builder import HEADS, build_loss
-from mmdet3d.models.utils import clip_sigmoid
+from mmdet3d.models.utils import clip_sigmoid, FreezeMixin
 from mmdet3d.ops.iou3d.iou3d_utils import nms_gpu
 from mmdet.core import build_bbox_coder, multi_apply
 
@@ -84,7 +84,7 @@ class SemanticHead(nn.Module):
         return feat
 
 @HEADS.register_module()
-class SeparateHead(nn.Module):
+class SeparateHead(FreezeMixin, nn.Module):
     """SeparateHead for CenterHead.
 
     Args:
@@ -111,11 +111,13 @@ class SeparateHead(nn.Module):
                  conv_cfg=dict(type='Conv2d'),
                  norm_cfg=dict(type='BN2d'),
                  bias='auto',
+                 freeze=False,
                  **kwargs):
         super(SeparateHead, self).__init__()
 
         self.heads = heads
         self.init_bias = init_bias
+        self.freeze = freeze
         for head in self.heads:
             classes, num_conv = self.heads[head]
 
@@ -188,7 +190,7 @@ class SeparateHead(nn.Module):
 
 
 @HEADS.register_module()
-class DCNSeparateHead(nn.Module):
+class DCNSeparateHead(FreezeMixin, nn.Module):
     r"""DCNSeparateHead for CenterHead.
 
     .. code-block:: none
@@ -223,8 +225,10 @@ class DCNSeparateHead(nn.Module):
                  conv_cfg=dict(type='Conv2d'),
                  norm_cfg=dict(type='BN2d'),
                  bias='auto',
+                 freeze=False,
                  **kwargs):
         super(DCNSeparateHead, self).__init__()
+        self.freeze = freeze
         if 'heatmap' in heads:
             heads.pop('heatmap')
         # feature adaptation with dcn
@@ -371,6 +375,7 @@ class CenterHead(nn.Module):
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.num_anchor_per_locs = [n for n in num_classes]
         self.fp16_enabled = False
+        self.freeze_bbox = freeze_bbox
 
         # a shared convolution
         self.shared_conv = ConvModule(
@@ -389,6 +394,8 @@ class CenterHead(nn.Module):
             heads.update(dict(heatmap=(num_cls, num_heatmap_convs)))
             separate_head.update(
                 in_channels=share_conv_channel, heads=heads, num_cls=num_cls)
+            if freeze_bbox:
+                separate_head['freeze'] = True
             self.task_heads.append(builder.build_head(separate_head))
 
         if semantic_head is not None:
@@ -399,14 +406,18 @@ class CenterHead(nn.Module):
             self.semantic_head = None
 
         if freeze_bbox:
-            for task_head in self.task_heads:
-                task_head.eval()
-                for param in task_head.parameters():
-                    param.requires_grad = False
-
             self.shared_conv.eval()
             for param in self.shared_conv.parameters():
                 param.requires_grad = False
+
+    def train(self, mode=True):
+        super().train(mode)
+
+        # unset batchnorm training mode
+        if mode and self.freeze_bbox:
+            for m in self.shared_conv.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.eval()
 
     def init_weights(self):
         """Initialize weights."""
@@ -694,7 +705,7 @@ class CenterHead(nn.Module):
         else:
             task_preds = preds_dicts
 
-        for task_id, preds_dict in enumerate(task_preds):
+        for task_id, preds_dict in (enumerate(task_preds) if not self.freeze_bbox else []):
             # heatmap focal loss
             preds_dict[0]['heatmap'] = clip_sigmoid(preds_dict[0]['heatmap'])
             num_pos = heatmaps[task_id].eq(1).float().sum().item()

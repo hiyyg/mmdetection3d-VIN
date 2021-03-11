@@ -3,10 +3,11 @@ from mmcv.runner import load_checkpoint
 from torch import nn as nn
 
 from mmdet.models import BACKBONES
+from mmdet3d.models.utils import FreezeMixin
 
 
 @BACKBONES.register_module()
-class SECOND(nn.Module):
+class SECOND(FreezeMixin, nn.Module):
     """Backbone network for SECOND/PointPillars/PartA2/MVXNet.
 
     Args:
@@ -61,11 +62,7 @@ class SECOND(nn.Module):
             blocks.append(block)
 
         self.blocks = nn.ModuleList(blocks)
-
-        if freeze:
-            self.eval()
-            for m in self.parameters():
-                m.requires_grad = False
+        self.freeze = freeze
 
     def init_weights(self, pretrained=None):
         """Initialize weights of the 2D backbone."""

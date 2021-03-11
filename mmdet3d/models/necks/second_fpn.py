@@ -6,10 +6,10 @@ from mmcv.runner import auto_fp16
 from torch import nn as nn
 
 from mmdet.models import NECKS
-
+from mmdet3d.models.utils import FreezeMixin
 
 @NECKS.register_module()
-class SECONDFPN(nn.Module):
+class SECONDFPN(FreezeMixin, nn.Module):
     """FPN used in SECOND/PointPillars/PartA2/MVXNet.
 
     Args:
@@ -39,6 +39,7 @@ class SECONDFPN(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.fp16_enabled = False
+        self.freeze = freeze
 
         deblocks = []
         for i, out_channel in enumerate(out_channels):
@@ -64,11 +65,6 @@ class SECONDFPN(nn.Module):
                                     nn.ReLU(inplace=True))
             deblocks.append(deblock)
         self.deblocks = nn.ModuleList(deblocks)
-
-        if freeze:
-            self.eval()
-            for m in self.parameters():
-                m.requires_grad = False
 
     def init_weights(self):
         """Initialize weights of FPN."""

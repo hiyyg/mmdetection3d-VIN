@@ -1,5 +1,5 @@
 _base_ = [
-    '../_base_/datasets/d3d-nuscenes-cbgs.py',
+    '../_base_/datasets/d3d-nuscenes.py',
     '../_base_/models/centerpoint_01voxel_second_secfpn_nus.py',
     '../_base_/schedules/cyclic_20e.py', '../_base_/default_runtime.py'
 ]
@@ -149,16 +149,12 @@ model = dict(
             point_cloud_range=point_cloud_range,
             mlp_channels=[256, 128, 64, 32],
             in_pts_channels=5),
-        loss_semantic=dict(type="EnsembleLoss", losses=[
-            dict(type="ExpLogCrossEntropyLoss", gamma=0.3, loss_weight=0.5),
-            dict(type="ExpLogDiceLoss", gamma=0.3, loss_weight=0.5),
-            dict(type="LovaszLoss", loss_weight=1)
-        ], use_sigmoid=False, class_weight=seg_weights)))
+        loss_semantic=dict(type="CrossEntropyLoss"), use_sigmoid=False, class_weight=seg_weights)))
 
 data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
-    train=dict(dataset=dict(pts_classes=seg_class_ids, pipeline=train_pipeline)),
+    train=dict(pts_classes=seg_class_ids, pipeline=train_pipeline),
     val=dict(pts_classes=seg_class_ids, pipeline=test_pipeline),
     test=dict(pts_classes=seg_class_ids, pipeline=test_pipeline))
 
@@ -167,3 +163,4 @@ train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
 evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic')
+total_epochs = 30

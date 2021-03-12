@@ -14,7 +14,6 @@ import tqdm
 from d3d.abstraction import (EgoPose, ObjectTag, ObjectTarget3D, Target3DArray,
                              TrackingTarget3D)
 from d3d.benchmarks import DetectionEvaluator, SegmentationEvaluator
-from d3d.box import box3dp_crop
 from d3d.dataset.base import DetectionDatasetBase, TrackingDatasetBase
 from d3d.dataset.kitti import KittiObjectLoader
 from d3d.dataset.kitti360 import KITTI360Loader
@@ -78,7 +77,7 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
         metadata['sweeps'] = sweeps
 
         if with_label:
-            annos = dict(arr=[], num_lidar_pts=[])
+            annos = dict(arr=[], num_lidar_pts=[], num_radar_pts=[])
 
             # parse array of objects
             objects = loader.annotation_3dobject(i)
@@ -86,10 +85,8 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
                 objects = calib.transform_objects(objects, lidar_name)
                 
                 # calculate number of points in the boxes
-                cloud = loader.lidar_data(i, names=lidar_name)
-                mask = objects.crop_points(cloud)
-                npts = np.sum(mask, axis=1)
-                annos['num_lidar_pts'] = npts.tolist()
+                annos['num_lidar_pts'] = [box.aux['num_lidar_pts'] for box in objects]
+                annos['num_radar_pts'] = [box.aux['num_radar_pts'] for box in objects]
 
                 # adapt box params to mmdet3d coordinate
                 box_arr = objects.to_numpy()
@@ -100,6 +97,8 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
                 annos['arr'] = box_arr.tolist()
 
                 metadata['annos'] = annos
+            elif loader.phase == "training": # Skip empty sample in training split
+                continue
 
         metalist.append(metadata)
 
@@ -188,6 +187,8 @@ class D3DDataset(Custom3DDataset):
             input_dict["sweeps"] = self.data_infos[index]["sweeps"]
 
         if not self.test_mode:
+            if 'annos' not in self.data_infos[index]:
+                return None
             annos = self.data_infos[index]['annos']
             if annos['arr']:
                 box_arr = np.array(annos['arr'])
@@ -195,7 +196,7 @@ class D3DDataset(Custom3DDataset):
                 return None
             # filter boxes
             if self.filter_empty_gt:
-                box_arr = box_arr[np.array(annos['num_lidar_pts']) > 0]
+                box_arr = box_arr[np.array(annos['num_lidar_pts']) + np.array(annos['num_radar_pts']) > 0]
             if self.filter_ignore:
                 box_arr = box_arr[box_arr[:, 0] > 0]
             if box_arr.shape[1] == 12: # with velocity
@@ -400,6 +401,9 @@ class D3DDataset(Custom3DDataset):
         return "D3DDataset(%s), phase: %s" % (self._loader.__class__.__name__, self._loader.phase)
 
     def get_cat_ids(self, idx):
+        if 'annos' not in self.data_infos[idx]:
+            return []
+
         annos = self.data_infos[idx]['annos']
 
         cat_ids = []
@@ -504,10 +508,11 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
             raise NotImplementedError("Dataset not supported")
 
         dataset = D3DDataset(ds_name, root_path, traininfo_path, inzip=inzip,
-                            trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline)
+                            trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline,
+                             filter_empty_gt=True, filter_ignore=True)
         create_groundtruth_database(dataset, root_path, info_prefix,
                                     database_save_path=database_save_path,
                                     db_info_save_path=db_info_save_path, with_mask_3d=True)
 
 if __name__ == "__main__":
-    d3d_data_prep("nuscenes", "/media/jacob/Storage/Datasets/nuscenes-mini", "d3d_nuscenes", trainval_split=0.5, db_generate=True)
+    d3d_data_prep("nuscenes", "data/nuscenes_d3d", "d3d_nuscenes", trainval_split="official", db_generate=True)

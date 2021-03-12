@@ -685,8 +685,9 @@ class CenterHead(nn.Module):
         Returns:
             dict[str:torch.Tensor]: Loss of heatmap and bbox of each task.
         """
-        heatmaps, anno_boxes, inds, masks = self.get_targets(
-            gt_bboxes_3d, gt_labels_3d)
+        if not self.freeze_bbox:
+            heatmaps, anno_boxes, inds, masks = self.get_targets(
+                gt_bboxes_3d, gt_labels_3d)
         loss_dict = dict()
 
         if self.semantic_head:

@@ -149,11 +149,7 @@ model = dict(
             point_cloud_range=point_cloud_range,
             mlp_channels=[256, 128, 64, 32],
             in_pts_channels=5),
-        loss_semantic=dict(type="EnsembleLoss", losses=[
-            dict(type="ExpLogCrossEntropyLoss", gamma=0.3, loss_weight=0.5),
-            dict(type="ExpLogDiceLoss", gamma=0.3, loss_weight=0.5),
-            dict(type="LovaszLoss", loss_weight=1)
-        ], use_sigmoid=False, class_weight=seg_weights)))
+        loss_semantic=dict(type="CrossEntropyLoss", use_sigmoid=False, class_weight=seg_weights)))
 
 data = dict(
     samples_per_gpu=4,

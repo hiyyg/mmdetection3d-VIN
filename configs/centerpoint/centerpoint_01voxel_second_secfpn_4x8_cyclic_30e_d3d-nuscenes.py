@@ -15,5 +15,5 @@ model = dict(
 train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
-evaluation = dict(interval=1)
+evaluation = dict(interval=1, metric="bbox")
 total_epochs = 30

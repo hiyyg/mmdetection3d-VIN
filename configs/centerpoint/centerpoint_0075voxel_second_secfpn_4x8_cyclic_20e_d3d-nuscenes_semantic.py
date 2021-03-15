@@ -1,5 +1,5 @@
 _base_ = [
-    './centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic.py'
+    './centerpoint_01voxel_second_secfpn_4x8_cyclic_30e_d3d-nuscenes_semantic.py'
 ]
 
 voxel_size = [0.075, 0.075, 0.2]

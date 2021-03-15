@@ -242,6 +242,7 @@ class MVXTwoStageDetector(Base3DDetector):
                       gt_labels_3d=None,
                       gt_labels=None,
                       gt_bboxes=None,
+                      out_of_range_points=None,
                       pts_semantic_mask=None,
                       pts_of_interest_idx=None,
                       pts_instance_mask=None,
@@ -280,6 +281,7 @@ class MVXTwoStageDetector(Base3DDetector):
             losses_pts = self.forward_pts_train(points, pts_feats,
                                                 gt_bboxes_3d, gt_labels_3d,
                                                 img_metas,
+                                                out_of_range_points,
                                                 pts_semantic_mask,
                                                 pts_of_interest_idx,
                                                 pts_instance_mask,
@@ -302,6 +304,7 @@ class MVXTwoStageDetector(Base3DDetector):
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
+                          out_of_range_points=None,
                           pts_semantic_mask=None,
                           pts_of_interest_idx=None,
                           pts_instance_mask=None,
@@ -399,7 +402,7 @@ class MVXTwoStageDetector(Base3DDetector):
         proposal_list = self.img_rpn_head.get_bboxes(*proposal_inputs)
         return proposal_list
 
-    def simple_test_pts(self, points, pts_feats, img_metas,
+    def simple_test_pts(self, points, pts_feats, img_metas, out_of_range_points=None,
                         rescale=False, pts_of_interest_idx=None,
                         pts_of_interest_revidx=None):
         """Test function of point cloud branch."""
@@ -415,6 +418,7 @@ class MVXTwoStageDetector(Base3DDetector):
 
     def simple_test(self, points, img_metas,
                     img=None, rescale=False,
+                    out_of_range_points=None,
                     pts_of_interest_idx=None,
                     pts_of_interest_revidx=None):
         """Test function without augmentaiton."""
@@ -425,7 +429,8 @@ class MVXTwoStageDetector(Base3DDetector):
         if pts_feats and self.with_pts_bbox:
             bbox_pts, pred_pts = self.simple_test_pts(
                 points, pts_feats, img_metas,
-                rescale=rescale, pts_of_interest_idx=pts_of_interest_idx,
+                rescale=rescale, out_of_range_points=out_of_range_points,
+                pts_of_interest_idx=pts_of_interest_idx,
                 pts_of_interest_revidx=pts_of_interest_revidx)
             for result_dict, pts_bbox, pts_pred in zip(bbox_list, bbox_pts, pred_pts):
                 result_dict['pts_bbox'] = pts_bbox

@@ -43,6 +43,8 @@ class Base3DDetector(BaseDetector):
                 kwargs['pts_of_interest_idx'] = kwargs['pts_of_interest_idx'][0]
             if 'pts_of_interest_revidx' in kwargs:
                 kwargs['pts_of_interest_revidx'] = kwargs['pts_of_interest_revidx'][0]
+            if 'out_of_range_points' in kwargs:
+                kwargs['out_of_range_points'] = kwargs['out_of_range_points'][0]
             return self.simple_test(points[0], img_metas[0], img[0], **kwargs)
         else:
             return self.aug_test(points, img_metas, img, **kwargs)

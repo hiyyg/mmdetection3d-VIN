@@ -51,6 +51,7 @@ class CenterPoint(MVXTwoStageDetector):
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
+                          out_of_range_points=None,
                           pts_semantic_mask=None,
                           pts_of_interest_idx=None,
                           pts_instance_mask=None,
@@ -70,7 +71,7 @@ class CenterPoint(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx)
+        outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx, out_of_range_points=out_of_range_points)
         losses = self.pts_bbox_head.loss(
             gt_bboxes_3d, gt_labels_3d, outs,
             pts_of_interest_idx=pts_of_interest_idx,
@@ -78,10 +79,10 @@ class CenterPoint(MVXTwoStageDetector):
         return losses
 
     def simple_test_pts(self, points, pts_feats, img_metas,
-                        rescale=False, pts_of_interest_idx=None,
+                        rescale=False, out_of_range_points=None, pts_of_interest_idx=None,
                         pts_of_interest_revidx=None):
         """Test function of point cloud branch."""
-        outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx)
+        outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx, out_of_range_points=out_of_range_points)
 
         if getattr(self.pts_bbox_head, 'semantic_head', None) is not None:
             bbox_feat = outs[:-1]
@@ -99,7 +100,7 @@ class CenterPoint(MVXTwoStageDetector):
         ]
         return bbox_results, pts_results
 
-    def aug_test_pts(self, points, pts_feats, img_metas, rescale=False,
+    def aug_test_pts(self, points, pts_feats, img_metas, rescale=False, out_of_range_points=None,
                      pts_of_interest_idx=None, pts_of_interest_revidx=None):
         """Test function of point cloud branch with augmentaiton.
 
@@ -129,7 +130,7 @@ class CenterPoint(MVXTwoStageDetector):
         pts_outs_list = [] # for semantic result
 
         for i, (x, img_meta) in enumerate(zip(pts_feats, img_metas)):
-            outs = self.pts_bbox_head(points[i], x, pts_of_interest_idx=pts_of_interest_idx[i])
+            outs = self.pts_bbox_head(points[i], x, pts_of_interest_idx=pts_of_interest_idx[i], out_of_range_points=out_of_range_points[i])
 
             if getattr(self.pts_bbox_head, 'semantic_head', None) is not None:
                 semantic_feat = outs[-1]
@@ -222,13 +223,13 @@ class CenterPoint(MVXTwoStageDetector):
 
         return bbox_results, pts_results
 
-    def aug_test(self, points, img_metas, imgs=None, rescale=False,
+    def aug_test(self, points, img_metas, imgs=None, rescale=False, out_of_range_points=None,
                  pts_of_interest_idx=None, pts_of_interest_revidx=None):
         """Test function with augmentaiton."""
         img_feats, pts_feats = self.extract_feats(points, img_metas, imgs)
         bbox_list = dict()
         if pts_feats and self.with_pts_bbox:
-            pts_bbox, pts_labels = self.aug_test_pts(points, pts_feats, img_metas, rescale,
+            pts_bbox, pts_labels = self.aug_test_pts(points, pts_feats, img_metas, rescale, out_of_range_points,
                 pts_of_interest_idx, pts_of_interest_revidx)
             bbox_list.update(pts_bbox=pts_bbox)
             bbox_list.update(pts_pointwise=pts_labels)

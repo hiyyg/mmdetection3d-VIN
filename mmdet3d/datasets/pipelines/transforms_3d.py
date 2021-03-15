@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 from mmcv import is_tuple_of
 from mmcv.utils import build_from_cfg
@@ -474,7 +475,9 @@ class GlobalRotScaleTrans(object):
 @PIPELINES.register_module()
 class PointShuffle(object):
     """Shuffle input points."""
-    # TODO(zyxin): Improve PointShuffle to PointSamplers (select subset of points)
+    def __init__(self, sample_rate=1.0, dynamic_rate=True):
+        self.sample_rate = sample_rate
+        self.dynamic_rate = dynamic_rate
 
     def __call__(self, input_dict):
         """Call function to shuffle points.
@@ -486,11 +489,20 @@ class PointShuffle(object):
             dict: Results after filtering, 'points' keys are updated \
                 in the result dict.
         """
-        perm = input_dict['points'].shuffle()
+        # shuffle or sample points
+        points = input_dict['points']
+        npoints = len(points)
+        if self.dynamic_rate:
+            sample_rate = np.random.rand() * (1-self.sample_rate) + self.sample_rate
+        else:
+            sample_rate = self.sample_rate
+        sample_size = int(npoints * sample_rate)
+        perm = torch.randperm(npoints, device=points.tensor.device)[:sample_size]
+        points.tensor = points.tensor[perm]
 
         # filter index of point of interest
         poi_index = input_dict['pts_of_interest_idx']
-        reverse_idx = reverse_index(poi_index, len(perm))
+        reverse_idx = reverse_index(poi_index, npoints)
         reverse_idx = reverse_idx[perm]
         input_dict['pts_of_interest_idx'] = reverse_index(
             reverse_idx, len(poi_index))
@@ -555,8 +567,9 @@ class PointsRangeFilter(object):
         point_cloud_range (list[float]): Point cloud range.
     """
 
-    def __init__(self, point_cloud_range):
+    def __init__(self, point_cloud_range, preserve_for_semantic=False):
         self.pcd_range = np.array(point_cloud_range, dtype=np.float32)
+        self.preserve_for_semantic = preserve_for_semantic
 
     def __call__(self, input_dict):
         """Call function to filter points by the range.
@@ -570,22 +583,30 @@ class PointsRangeFilter(object):
         """
         points = input_dict['points']
         points_mask = points.in_range_3d(self.pcd_range)
-        clean_points = points[points_mask]
-        input_dict['points'] = clean_points
+        input_dict['points'] = points[points_mask]
+        if self.preserve_for_semantic:
+            input_dict['out_of_range_points'] = points[~points_mask] # labels of discarded points are stored at the end of point of interest arrays
 
         # update points of interest
+        points_mask = points_mask.numpy()
         poi_index = input_dict['pts_of_interest_idx']
-        masked_idx, idx_mask = mask_index(points_mask.numpy(), poi_index)
-        input_dict['pts_of_interest_idx'] = masked_idx
+        masked_idx, idx_mask = mask_index(points_mask, poi_index)
+        removed_idx, removed_mask = mask_index(~points_mask, poi_index)
+        input_dict['pts_of_interest_idx'] = np.concatenate([
+            masked_idx, removed_idx])if self.preserve_for_semantic else masked_idx
 
         if 'pts_of_interest_revidx' in input_dict:
+            poi_revidx = input_dict['pts_of_interest_revidx']
             input_dict['pts_of_interest_revidx'] = \
-                input_dict['pts_of_interest_revidx'][idx_mask]
+                np.concatenate([poi_revidx[idx_mask], poi_revidx[removed_mask]
+                ]) if self.preserve_for_semantic else poi_revidx[idx_mask]
 
         # filter out semantic label for removed points
         if 'pts_semantic_mask' in input_dict:
             semantic_points = input_dict['pts_semantic_mask']
-            input_dict['pts_semantic_mask'] = semantic_points[idx_mask]
+            input_dict['pts_semantic_mask'] = \
+                np.concatenate([semantic_points[idx_mask], semantic_points[removed_mask]
+                ]) if self.preserve_for_semantic else semantic_points[idx_mask]
 
         return input_dict
 

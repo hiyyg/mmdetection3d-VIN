@@ -209,6 +209,10 @@ class DefaultFormatBundle3D(DefaultFormatBundle):
             assert isinstance(results['points'], BasePoints)
             results['points'] = DC(results['points'].tensor)
 
+        if 'out_of_range_points' in results:
+            assert isinstance(results['out_of_range_points'], BasePoints)
+            results['out_of_range_points'] = DC(results['out_of_range_points'].tensor)
+
         for key in ['voxels', 'coors', 'voxel_centers', 'num_points']:
             if key not in results:
                 continue

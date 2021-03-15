@@ -94,12 +94,13 @@ train_pipeline = [
         type='RandomFlip3D',
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
-    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
+    dict(type='PointShuffle', sample_rate=0.9),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range, preserve_for_semantic=True),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d',
+    dict(type='Collect3D', keys=['points', 'out_of_range_points', 'gt_bboxes_3d', 'gt_labels_3d',
         'pts_semantic_mask', 'pts_of_interest_idx'])
 ]
 test_pipeline = [

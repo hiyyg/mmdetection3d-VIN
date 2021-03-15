@@ -70,7 +70,10 @@ class SemanticHead(nn.Module):
             x_coord = (pc[:, 0] - self.point_cloud_range[0]) * W // x_range
             y_coord = (pc[:, 1] - self.point_cloud_range[1]) * H // y_range
             z_coord = (pc[:, 2] - self.point_cloud_range[2]) * D // z_range
-            selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()] # TODO: clamp x, y to accept points out side of grid
+            x_coord = x_coord.clamp(min=0, max=W) # use nearest feature for out of range points
+            y_coord = y_coord.clamp(min=0, max=H)
+            z_coord = z_coord.clamp(min=0, max=D)
+            selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()]
 
             # concatenate feature map
             pc[:, 0] -= x_coord / W * x_range
@@ -449,7 +452,7 @@ class CenterHead(nn.Module):
 
         return ret_dicts
 
-    def forward(self, points, feats, pts_of_interest_idx=None):
+    def forward(self, points, feats, out_of_range_points=None, pts_of_interest_idx=None):
         """Forward pass.
 
         Args:
@@ -461,7 +464,10 @@ class CenterHead(nn.Module):
             tuple(list[dict]): Output results for tasks.
         """
         if pts_of_interest_idx:
-            points = [cloud[idx] for cloud, idx in zip(points, pts_of_interest_idx)]
+            if out_of_range_points: # use out of range points
+                points = [torch.cat([cloud, oor_cloud], dim=0)[mask] for cloud, oor_cloud, mask in zip(points, out_of_range_points, pts_of_interest_idx)]
+            else:
+                points = [cloud[idx] for cloud, idx in zip(points, pts_of_interest_idx)]
 
         pts_repeated = [points] * len(feats)
         results = multi_apply(self.forward_single, pts_repeated, feats)
@@ -668,7 +674,7 @@ class CenterHead(nn.Module):
         return heatmaps, anno_boxes, inds, masks
 
     @force_fp32(apply_to=('preds_dicts'))
-    def loss(self,
+    def loss(self, # TODO(zyxin): weight loss for out of range points
              gt_bboxes_3d, gt_labels_3d, preds_dicts,
              pts_semantic_mask=None, pts_instance_mask=None,
              **kwargs):

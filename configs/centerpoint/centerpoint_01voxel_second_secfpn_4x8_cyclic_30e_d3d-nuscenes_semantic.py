@@ -162,5 +162,5 @@ data = dict(
 train_cfg = dict(pts=dict(point_cloud_range=point_cloud_range))
 test_cfg = dict(pts=dict(pc_range=point_cloud_range[:2]))
 
-evaluation = dict(interval=1, dump_prefix='work_dirs/centerpoint_01voxel_second_secfpn_4x8_cyclic_20e_d3d-nuscenes_semantic')
+evaluation = dict(interval=1)
 total_epochs = 30

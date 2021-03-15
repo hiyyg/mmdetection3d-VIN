@@ -7,6 +7,6 @@ model = dict(
             # dict(type="ExpLogDiceLoss", gamma=0.3, loss_weight=0.5),
             dict(type="CrossEntropyLoss", loss_weight=0.5),
             dict(type="LovaszLoss", loss_weight=1)
-        ], use_sigmoid=False, class_weight=seg_weights)))
+        ], use_sigmoid=False))) # class_weight inherited
 
 evaluation = dict(interval=1)

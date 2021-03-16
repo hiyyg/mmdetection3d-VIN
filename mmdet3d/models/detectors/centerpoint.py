@@ -72,8 +72,15 @@ class CenterPoint(MVXTwoStageDetector):
             dict: Losses of each branch.
         """
         outs = self.pts_bbox_head(points, pts_feats, pts_of_interest_idx=pts_of_interest_idx, out_of_range_points=out_of_range_points)
+
+        if out_of_range_points is not None:
+            out_of_range_splits = [torch.sum(poi < len(p)) for p, poi in zip(points, pts_of_interest_idx)]
+        else:
+            out_of_range_splits = None
+
         losses = self.pts_bbox_head.loss(
             gt_bboxes_3d, gt_labels_3d, outs,
+            out_of_range_splits=out_of_range_splits,
             pts_of_interest_idx=pts_of_interest_idx,
             pts_semantic_mask=pts_semantic_mask)
         return losses
@@ -87,6 +94,8 @@ class CenterPoint(MVXTwoStageDetector):
         if getattr(self.pts_bbox_head, 'semantic_head', None) is not None:
             bbox_feat = outs[:-1]
             semantic_feat = outs[-1]
+            if out_of_range_points is not None:
+                points = [torch.cat([cloud, oor_cloud], dim=0) for cloud, oor_cloud in zip(points, out_of_range_points)]
             pts_results = self.pts_bbox_head.get_semantic(points, semantic_feat, pts_of_interest_revidx)
         else:
             bbox_feat = outs
@@ -135,8 +144,13 @@ class CenterPoint(MVXTwoStageDetector):
             if getattr(self.pts_bbox_head, 'semantic_head', None) is not None:
                 semantic_feat = outs[-1]
                 outs = outs[:-1]
+
+                if out_of_range_points is not None:
+                    sem_points = torch.cat([points[i], out_of_range_points[i]], dim=0)
+                else:
+                    sem_points = points[i]
                 pts_outs_list.append(self.pts_bbox_head.get_semantic(
-                    points[i], semantic_feat, pts_of_interest_revidx[i])[0])
+                    sem_points, semantic_feat, pts_of_interest_revidx[i])[0])
 
             # merge augmented outputs before decoding bboxes
             for task_id, out in enumerate(outs):

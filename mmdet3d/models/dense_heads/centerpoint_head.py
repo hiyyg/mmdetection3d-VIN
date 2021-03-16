@@ -70,9 +70,9 @@ class SemanticHead(nn.Module):
             x_coord = (pc[:, 0] - self.point_cloud_range[0]) * W // x_range
             y_coord = (pc[:, 1] - self.point_cloud_range[1]) * H // y_range
             z_coord = (pc[:, 2] - self.point_cloud_range[2]) * D // z_range
-            x_coord = x_coord.clamp(min=0, max=W) # use nearest feature for out of range points
-            y_coord = y_coord.clamp(min=0, max=H)
-            z_coord = z_coord.clamp(min=0, max=D)
+            x_coord = x_coord.clamp(min=0, max=W-1) # use nearest feature for out of range points
+            y_coord = y_coord.clamp(min=0, max=H-1)
+            z_coord = z_coord.clamp(min=0, max=D-1)
             selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()]
 
             # concatenate feature map
@@ -80,7 +80,7 @@ class SemanticHead(nn.Module):
             pc[:, 1] -= y_coord / H * y_range
             pc[:, 2] -= z_coord / D * z_range
             concat_feats.append(torch.cat([pc, selected_feat.t()], dim=1))
-        
+
         feat = torch.cat(concat_feats)
         feat = self.point_mlps(feat)
 
@@ -353,6 +353,7 @@ class CenterHead(nn.Module):
                  separate_head=dict(
                      type='SeparateHead', init_bias=-2.19, final_kernel=3),
                  semantic_head=None,
+                 out_of_range_weight=1,
                  share_conv_channel=64,
                  num_heatmap_convs=2,
                  conv_cfg=dict(type='Conv2d'),
@@ -375,6 +376,7 @@ class CenterHead(nn.Module):
         self.loss_semantic_pow = loss_semantic.pop('pow', 1)
         self.loss_semantic_sigmoid = loss_semantic['use_sigmoid']
         self.loss_semantic = build_loss(loss_semantic)
+        self.out_of_range_weight = out_of_range_weight
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.num_anchor_per_locs = [n for n in num_classes]
         self.fp16_enabled = False
@@ -674,8 +676,9 @@ class CenterHead(nn.Module):
         return heatmaps, anno_boxes, inds, masks
 
     @force_fp32(apply_to=('preds_dicts'))
-    def loss(self, # TODO(zyxin): weight loss for out of range points
+    def loss(self,
              gt_bboxes_3d, gt_labels_3d, preds_dicts,
+             out_of_range_splits=None,
              pts_semantic_mask=None, pts_instance_mask=None,
              **kwargs):
         """Loss function for CenterHead.
@@ -700,9 +703,30 @@ class CenterHead(nn.Module):
             task_preds, semantic_preds = preds_dicts[:-1], preds_dicts[-1]
 
             # semantic loss
-            semantic_label = torch.cat(pts_semantic_mask).long()
-            semantic_loss = self.loss_semantic(semantic_preds[0],
-                                               semantic_label)
+            if out_of_range_splits is not None and self.out_of_range_weight != 1:
+                in_range_label, in_range_preds = [], []
+                out_range_label, out_range_preds = [], []
+                counter = 0
+                for i, oor_split in enumerate(out_of_range_splits):
+                    in_range_label.append(pts_semantic_mask[i][:oor_split])
+                    out_range_label.append(pts_semantic_mask[i][oor_split:])
+
+                    npoints = len(pts_semantic_mask[i])
+                    in_range_preds.append(semantic_preds[0][counter:counter + oor_split])
+                    out_range_preds.append(semantic_preds[0][counter + oor_split:counter + npoints])
+                    counter += npoints
+
+                in_range_label = torch.cat(in_range_label).long()
+                in_range_loss = self.loss_semantic(
+                    torch.cat(in_range_preds, dim=0), in_range_label)
+                out_range_label = torch.cat(out_range_label).long()
+                out_range_loss = self.loss_semantic(
+                    torch.cat(out_range_preds, dim=0), out_range_label)
+                semantic_loss = in_range_loss + out_range_loss
+            else:
+                semantic_label = torch.cat(pts_semantic_mask).long()
+                semantic_loss = self.loss_semantic(semantic_preds[0],
+                                                semantic_label)
             if self.loss_semantic_pow == 0.5:
                 semantic_loss = semantic_loss.sqrt()
             elif self.loss_semantic_pow != 1:

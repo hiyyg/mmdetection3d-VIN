@@ -497,15 +497,31 @@ class PointShuffle(object):
         else:
             sample_rate = self.sample_rate
         sample_size = int(npoints * sample_rate)
-        perm = torch.randperm(npoints, device=points.tensor.device)[:sample_size]
-        points.tensor = points.tensor[perm]
+        perm = torch.randperm(npoints, device=points.tensor.device)
+        points.tensor = points.tensor[perm[:sample_size]]
 
         # filter index of point of interest
         poi_index = input_dict['pts_of_interest_idx']
         reverse_idx = reverse_index(poi_index, npoints)
         reverse_idx = reverse_idx[perm]
-        input_dict['pts_of_interest_idx'] = reverse_index(
-            reverse_idx, len(poi_index))
+        poi_index_shuffled = reverse_index(reverse_idx, len(poi_index))
+
+        # remove discard indices
+        if self.sample_rate != 1:
+            points_mask = np.zeros(npoints, dtype=bool)
+            points_mask[:sample_size] = True
+            masked_idx, idx_mask = mask_index(points_mask, poi_index_shuffled)
+            input_dict['pts_of_interest_idx'] = masked_idx
+
+            if 'pts_of_interest_revidx' in input_dict:
+                poi_revidx = input_dict['pts_of_interest_revidx']
+                input_dict['pts_of_interest_revidx'] = poi_revidx[idx_mask]
+
+            if 'pts_semantic_mask' in input_dict:
+                semantic_points = input_dict['pts_semantic_mask']
+                input_dict['pts_semantic_mask'] = semantic_points[idx_mask]
+        else:
+            input_dict['pts_of_interest_idx'] = poi_index_shuffled
 
         return input_dict
 
@@ -590,23 +606,22 @@ class PointsRangeFilter(object):
         # update points of interest
         points_mask = points_mask.numpy()
         poi_index = input_dict['pts_of_interest_idx']
-        masked_idx, idx_mask = mask_index(points_mask, poi_index)
-        removed_idx, removed_mask = mask_index(~points_mask, poi_index)
-        input_dict['pts_of_interest_idx'] = np.concatenate([
-            masked_idx, removed_idx])if self.preserve_for_semantic else masked_idx
+        if self.preserve_for_semantic: # no point actually discarded
+            perm = np.concatenate([np.where(points_mask)[0], np.where(~points_mask)[0]])
+            reverse_idx = reverse_index(poi_index, len(points))
+            reverse_idx = reverse_idx[perm]
+            input_dict['pts_of_interest_idx'] = reverse_index(reverse_idx, len(poi_index))
+        else:
+            masked_idx, idx_mask = mask_index(points_mask, poi_index)
+            input_dict['pts_of_interest_idx'] = masked_idx
 
-        if 'pts_of_interest_revidx' in input_dict:
-            poi_revidx = input_dict['pts_of_interest_revidx']
-            input_dict['pts_of_interest_revidx'] = \
-                np.concatenate([poi_revidx[idx_mask], poi_revidx[removed_mask]
-                ]) if self.preserve_for_semantic else poi_revidx[idx_mask]
+            if 'pts_of_interest_revidx' in input_dict:
+                poi_revidx = input_dict['pts_of_interest_revidx']
+                input_dict['pts_of_interest_revidx'] = poi_revidx[idx_mask]
 
-        # filter out semantic label for removed points
-        if 'pts_semantic_mask' in input_dict:
-            semantic_points = input_dict['pts_semantic_mask']
-            input_dict['pts_semantic_mask'] = \
-                np.concatenate([semantic_points[idx_mask], semantic_points[removed_mask]
-                ]) if self.preserve_for_semantic else semantic_points[idx_mask]
+            if 'pts_semantic_mask' in input_dict:
+                semantic_points = input_dict['pts_semantic_mask']
+                input_dict['pts_semantic_mask'] = semantic_points[idx_mask]
 
         return input_dict
 

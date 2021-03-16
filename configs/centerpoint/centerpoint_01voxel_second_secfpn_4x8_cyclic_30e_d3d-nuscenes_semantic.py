@@ -98,7 +98,6 @@ train_pipeline = [
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range, preserve_for_semantic=True),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
-    dict(type='PointShuffle'),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
     dict(type='Collect3D', keys=['points', 'out_of_range_points', 'gt_bboxes_3d', 'gt_labels_3d',
         'pts_semantic_mask', 'pts_of_interest_idx'])
@@ -127,16 +126,12 @@ test_pipeline = [
                 scale_ratio_range=[1., 1.],
                 translation_std=[0, 0, 0]),
             dict(type='RandomFlip3D'),
-            dict(
-                # This step makes semantic estimation impossible for points out of range
-                # TODO(zyxin): consider also taking in the whole point cloud and estimate the points
-                #              out of range by the nearest voxel?
-                type='PointsRangeFilter', point_cloud_range=point_cloud_range),
+            dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range, preserve_for_semantic=True),
             dict(
                 type='DefaultFormatBundle3D',
                 class_names=class_names,
                 with_label=False),
-            dict(type='Collect3D', keys=['points', 'pts_of_interest_idx', 'pts_of_interest_revidx'])
+            dict(type='Collect3D', keys=['points', 'out_of_range_points', 'pts_of_interest_idx', 'pts_of_interest_revidx'])
         ])
 ]
 
@@ -150,7 +145,8 @@ model = dict(
             point_cloud_range=point_cloud_range,
             mlp_channels=[256, 128, 64, 32],
             in_pts_channels=5),
-        loss_semantic=dict(type="CrossEntropyLoss", use_sigmoid=False, class_weight=seg_weights)))
+        loss_semantic=dict(type="CrossEntropyLoss", use_sigmoid=False, class_weight=seg_weights),
+        out_of_range_weight=0.2))
 
 data = dict(
     samples_per_gpu=4,

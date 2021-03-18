@@ -75,6 +75,7 @@ class LoadPointsFromMultiSweeps(object):
         sweeps_num (int): Number of sweeps. Defaults to 10.
         load_dim (int): Dimension number of the loaded points. Defaults to 5.
         use_dim (list[int]): Which dimension to use. Defaults to [0, 1, 2, 4].
+        time_dim (int): Which dimension to be used as time
         file_client_args (dict): Config dict of file clients, refer to
             https://github.com/open-mmlab/mmcv/blob/master/mmcv/fileio/file_client.py
             for more details. Defaults to dict(backend='disk').
@@ -91,6 +92,7 @@ class LoadPointsFromMultiSweeps(object):
                  sweeps_num=10,
                  load_dim=5,
                  use_dim=[0, 1, 2, 4],
+                 time_dim=4,
                  file_client_args=dict(backend='disk'),
                  pad_empty_sweeps=False,
                  remove_close=False,
@@ -100,6 +102,7 @@ class LoadPointsFromMultiSweeps(object):
         if isinstance(use_dim, int):
             use_dim = list(range(use_dim))
         self.use_dim = use_dim
+        self.time_dim = time_dim
         self.file_client_args = file_client_args.copy()
         self.file_client = None
         self.pad_empty_sweeps = pad_empty_sweeps
@@ -164,7 +167,14 @@ class LoadPointsFromMultiSweeps(object):
                 - points (np.ndarray): Multi-sweep point cloud arrays.
         """
         points = results['points']
-        points.tensor[:, 4] = 0
+        if points.tensor.shape[1] <= self.time_dim:
+            # pad tensor to use time dimension
+            new_tensor = np.zeros((len(points), self.time_dim + 1), dtype=np.float32)
+            new_tensor[:, :points.tensor.shape[1]] = points.tensor.numpy()
+            points = type(points)(new_tensor, points_dim=new_tensor.shape[-1], attribute_dims=points.attribute_dims)
+        else:
+            points.tensor[:, self.time_dim] = 0
+
         sweep_points_list = [points]
         ts = results['timestamp']
         if self.pad_empty_sweeps and len(results['sweeps']) == 0:
@@ -183,20 +193,20 @@ class LoadPointsFromMultiSweeps(object):
                     len(results['sweeps']), self.sweeps_num, replace=False)
             for idx in choices:
                 sweep = results['sweeps'][idx]
-                points_sweep = self._load_points(sweep['data_path'])
-                points_sweep = np.copy(points_sweep).reshape(-1, self.load_dim)
+                loaded_points = self._load_points(sweep['data_path']).reshape(-1, self.load_dim)[:, self.use_dim]
+                points_sweep = np.zeros((len(loaded_points), max(loaded_points.shape[1], self.time_dim + 1)), dtype=np.float32)
+                points_sweep[:, :loaded_points.shape[1]] = loaded_points
                 if self.remove_close:
                     points_sweep = self._remove_close(points_sweep)
                 sweep_ts = sweep['timestamp'] / 1e6
                 points_sweep[:, :3] = points_sweep[:, :3] @ sweep[
                     'sensor2lidar_rotation'].T
                 points_sweep[:, :3] += sweep['sensor2lidar_translation']
-                points_sweep[:, 4] = ts - sweep_ts
+                points_sweep[:, self.time_dim] = ts - sweep_ts
                 points_sweep = points.new_point(points_sweep)
                 sweep_points_list.append(points_sweep)
 
         points = points.cat(sweep_points_list)
-        points = points[:, self.use_dim]
         results['points'] = points
         return results
 

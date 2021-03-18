@@ -52,7 +52,7 @@ def resolve_dataset_type(ds_type) -> DetectionDatasetBase:
     else:
         raise ValueError("Dataset name not recognized!")
 
-def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False, ninter_frames: int = 6, with_label=None):
+def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False, ninter_frames: int = 10, with_label=None):
     if with_label is None:
         with_label = loader.phase != "testing"
     
@@ -181,7 +181,7 @@ class D3DDataset(Custom3DDataset):
             lidar2img=lidar2img
         )
         if isinstance(self._loader, TrackingDatasetBase):
-            input_dict['timestamp'] = self._loader.timestamp(sample_idx)
+            input_dict['timestamp'] = self._loader.timestamp(sample_idx) / 1e6
 
         if "sweeps" in self.data_infos[index]:
             input_dict["sweeps"] = self.data_infos[index]["sweeps"]
@@ -418,7 +418,7 @@ class D3DDataset(Custom3DDataset):
 
 
 def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
-    trainval_split=0.8, inzip=False, lidar_name=0, debug=False,
+    trainval_split=0.8, inzip=False, lidar_name=0, debug=False, ninter_frames=10,
     database_save_path=None, db_generate=False, db_info_save_path=None):
     ds_type = resolve_dataset_type(ds_name)
     seed = int(str(random())[2:])
@@ -433,18 +433,18 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
     train_loader = ds_type(root_path, inzip=inzip, phase="training",
         trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     traininfo_path = info_path = Path(root_path, f'{info_prefix}_infos_train.pkl')
-    mmcv.dump(collect_ann_file(train_loader, lidar_name, debug=debug), info_path)
+    mmcv.dump(collect_ann_file(train_loader, lidar_name, ninter_frames=ninter_frames, debug=debug), info_path)
 
     # Creating info for validation set
     val_loader = ds_type(root_path, inzip=inzip, phase="validation",
         trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     info_path = Path(root_path, f'{info_prefix}_infos_val.pkl')
-    mmcv.dump(collect_ann_file(val_loader, lidar_name, debug=debug), info_path)
+    mmcv.dump(collect_ann_file(val_loader, lidar_name, ninter_frames=ninter_frames, debug=debug), info_path)
 
     # Creating info for test set
     test_loader = ds_type(root_path, inzip=inzip, phase="testing")
     info_path = Path(root_path, f'{info_prefix}_infos_test.pkl')
-    mmcv.dump(collect_ann_file(test_loader, lidar_name, debug=debug), info_path)
+    mmcv.dump(collect_ann_file(test_loader, lidar_name, ninter_frames=ninter_frames, debug=debug), info_path)
 
     # Creating dataset ground-truth sampler
     try:
@@ -480,7 +480,7 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
                     file_client_args=file_client_args),
                 dict(
                     type='LoadPointsFromMultiSweeps',
-                    sweeps_num=6,
+                    sweeps_num=9,
                     use_dim=5,
                     pad_empty_sweeps=False,
                     remove_close=True,
@@ -508,7 +508,7 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
             raise NotImplementedError("Dataset not supported")
 
         dataset = D3DDataset(ds_name, root_path, traininfo_path, inzip=inzip,
-                            trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline,
+                             trainval_split=trainval_split, trainval_random=seed, pipeline=pipeline,
                              filter_empty_gt=True, filter_ignore=True)
         create_groundtruth_database(dataset, root_path, info_prefix,
                                     database_save_path=database_save_path,

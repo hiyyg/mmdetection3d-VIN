@@ -43,7 +43,7 @@ db_sampler = dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=[0, 1, 2, 3, 4],
+        use_dim=5,
         file_client_args=file_client_args))
 
 train_pipeline = [
@@ -51,12 +51,12 @@ train_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=[0, 1, 2, 3, 4],
+        use_dim=5,
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=9,
-        use_dim=[0, 1, 2, 3, 4],
+        use_dim=5,
         remove_close=True,
         file_client_args=file_client_args),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
@@ -82,12 +82,12 @@ test_pipeline = [
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=[0, 1, 2, 3, 4],
+        use_dim=5,
         file_client_args=file_client_args),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=9,
-        use_dim=[0, 1, 2, 3, 4],
+        use_dim=5,
         file_client_args=file_client_args),
     dict(
         type='MultiScaleFlipAug3D',

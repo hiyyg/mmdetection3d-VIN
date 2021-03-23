@@ -4,8 +4,9 @@ This file provides dataset interfaces with d3d as backend
 import mmcv
 import msgpack
 import msgpack_numpy
-
 msgpack_numpy.patch()
+
+import json
 import numpy as np
 import os.path as osp
 import pickle
@@ -19,10 +20,12 @@ from d3d.dataset.kitti import KittiObjectLoader
 from d3d.dataset.kitti360 import KITTI360Loader
 from d3d.dataset.nuscenes import NuscenesLoader
 from d3d.dataset.waymo import WaymoLoader
+from io import BytesIO
 from mmcv.utils import print_log
 from pathlib import Path
 from random import random
 from scipy.spatial.transform import Rotation
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from mmdet3d.core.bbox import LiDARInstance3DBoxes
 from mmdet3d.datasets.custom_3d import Custom3DDataset
@@ -252,8 +255,8 @@ class D3DDataset(Custom3DDataset):
             seg_fout.write(packer.pack_array_header(len(outputs)))
 
         if dump_visual:
-            vis_path = osp.join(dump_prefix, "visual")
-            mmcv.mkdir_or_exist(vis_path)
+            vis_archive = osp.join(dump_prefix, "visual.zip")
+            vis_archive = ZipFile(vis_archive, "w", compression=ZIP_DEFLATED)
 
         if dump_submission:
             sdet_path = osp.join(dump_prefix, "submission_detection")
@@ -323,8 +326,9 @@ class D3DDataset(Custom3DDataset):
                                 visdata['semantic_gt'] = self._loader.annotation_3dpoints(uidx)['semantic']
                             visdata['semantic_colormap'] = [l.color for l in self._loader.VALID_PTS_CLASSES]
 
-                        with open(osp.join(vis_path, "%06d.pkl" % idx), "wb") as fout:
-                            pickle.dump(visdata, fout)
+                        buffer = BytesIO()
+                        pickle.dump(visdata, buffer)
+                        vis_archive.writestr("%06d.pkl" % idx, buffer.getvalue())
 
                     # save submission file for official eval
                     if dump_submission:
@@ -339,6 +343,10 @@ class D3DDataset(Custom3DDataset):
             if dump_prefix is not None:
                 det_fout.close()
                 seg_fout.close()
+                if dump_visual:
+                    idlist = [anno['uidx'] for anno in self.data_infos]
+                    vis_archive.writestr("idlist.json", json.dumps(idlist, default=int)) # frame_idx could be numpy int
+                    vis_archive.close()
 
         if iterative:
             return parse()

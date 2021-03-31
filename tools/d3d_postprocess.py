@@ -1,13 +1,20 @@
 import pickle
+from re import L
 import msgpack
+import msgpack_numpy
+from numpy.lib.arraysetops import isin, unique
+msgpack_numpy.patch()
+
 import numpy as np
-from itertools import repeat
+import torch
+from collections import namedtuple, defaultdict
+from itertools import count, repeat, islice, groupby
 from multiprocessing import Pool
-from tqdm import tqdm
-from d3d.box import box3dp_crop
+from tqdm import tqdm, trange
 from d3d.benchmarks import SegmentationEvaluator, DetectionEvaluator
+from d3d.dataset.base import TrackingDatasetBase
 from d3d.dataset.nuscenes import NuscenesLoader, NuscenesDetectionClass, NuscenesSegmentationClass
-from d3d.abstraction import Target3DArray
+from d3d.abstraction import Target3DArray, TransformSet
 
 
 def eval_frame_det(inputs):
@@ -25,24 +32,27 @@ def eval_frame_det(inputs):
 def eval_detection(debug=False,
                    anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
                    result_path="work_dirs/temp/detection_results.msg",
-                   dataset_path = "/mnt/cache2t/jacobz/nuscenes_converted"):
+                   dataset_path="data/nuscenes_d3d/",
+                   ratio=1):
 
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
     with open(result_path, "rb") as fin:
         dets = msgpack.unpack(fin)
+    N = len(annos)
+    uidx_list = [item['uidx'] for item in annos]
     print("results loaded.")
 
     loader = NuscenesLoader(dataset_path)
     evaluator = DetectionEvaluator(list(NuscenesDetectionClass)[1:], 0.5)
 
     if debug:
-        mapping = map(eval_frame_det, zip((item['uidx'] for item in annos), dets, repeat(loader), repeat(evaluator)))
+        mapping = map(eval_frame_det, zip(uidx_list, dets, repeat(loader), repeat(evaluator)))
     else:
         pool = Pool(processes=15)
-        mapping = pool.imap_unordered(eval_frame_det, zip((item['uidx'] for item in annos), dets))
+        mapping = pool.imap_unordered(eval_frame_det, zip(uidx_list, dets, repeat(loader), repeat(evaluator)))
 
-    for i, stats in enumerate(tqdm(mapping, total=len(annos))):
+    for i, stats in enumerate(tqdm(islice(mapping, int(N*ratio)), total=int(N*ratio))):
         evaluator.add_stats(stats)
         if debug and i > 10:
             break
@@ -68,21 +78,25 @@ def eval_frame_seg(inputs):
 
     # calculate
     assert gt_labels.shape == pred_labels.shape
-    return evaluator.calc_stats(gt_labels, pred_labels, gt_ids, pred_ids)
+    stats = evaluator.calc_stats(gt_labels, pred_labels, gt_ids, pred_ids)
+    return stats
 
 def eval_segmentation(debug=False,
                       anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
                       det_result_path="work_dirs/temp/detection_results.msg",
                       seg_result_path="work_dirs/temp/segmentation_results.msg",
-                      dataset_path = "/mnt/cache2t/jacobz/nuscenes_converted",
-                      score_threshold = 0.4):
-                      
+                      dataset_path = "data/nuscenes_d3d",
+                      score_threshold = 0.4,
+                      ratio = 1):
+
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
     with open(det_result_path, "rb") as fin:
         dets = msgpack.unpack(fin)
     with open(seg_result_path, "rb") as fin:
         segs = msgpack.unpack(fin)
+    N = len(annos)
+    uidx_list = [item['uidx'] for item in annos]
     print("results loaded.")
 
     loader = NuscenesLoader(dataset_path)
@@ -90,14 +104,11 @@ def eval_segmentation(debug=False,
 
     # run evaluator
     if debug:
-        mapping = map(eval_frame_seg, zip((item['uidx'] for item in annos), dets, segs,
-                                          repeat(loader), repeat(evaluator), repeat(score_threshold)))
+        mapping = map(eval_frame_seg, zip(uidx_list, dets, segs, repeat(loader), repeat(evaluator), repeat(score_threshold)))
     else:
-        pool = Pool(processes=15)
-        mapping = pool.imap_unordered(eval_frame_seg, zip((item['uidx'] for item in annos), dets, segs,
-                                                          repeat(loader), repeat(evaluator), repeat(score_threshold)))
+        mapping = Pool(processes=8).imap_unordered(eval_frame_seg, zip(uidx_list, dets, segs, repeat(loader), repeat(evaluator), repeat(score_threshold)))
 
-    for stats in tqdm(mapping, total=len(annos)):
+    for i, stats in tqdm(islice(enumerate(mapping), int(N*ratio)), total=int(N*ratio)):
         evaluator.add_stats(stats)
     print(evaluator.summary())
 
@@ -122,18 +133,239 @@ def eval_segmentation(debug=False,
     print("Stuff SQ=%.3f, RQ=%.3f, PQ=%.3f" % (msq, mrq, mpq))
 
     mpq = [evaluator.pq()[k] for k in thing_cls] + [evaluator.iou()[k] for k in stuff_cls]
-    mpq = sum(mpq) / len(thing_cls)
+    mpq = sum(mpq) / len(mpq)
     print("Replaced PQ=%.3f" % mpq)
 
-def detseg_crossfix(debug=False,
+def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                     anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
                     det_result_path="work_dirs/temp/detection_results.msg",
-                    seg_result_path="work_dirs/temp/segmentation_results.msg"):
-    # TODO: output file be detection_results.fix.msg or segmentation_results.fix.msg
-    pass
+                    seg_result_path="work_dirs/temp/segmentation_results.msg",
+                    debug=False, index=None,
+                    point_to_box_label=True,
+                    box_to_point_label=True,
+                    point_to_box_scale=True,
+                    score_threshold=0.4,
+                    count_threshold=10,
+                    thing_labels=list(range(1,11)),
+                    count_coeff=1, consistent_coeff=1):
+    '''
+    Crossfix on detection and segmentation results
+    :param index: If None, then all frames are converted, if int, then only specific frame will be converted
+    :param score_threshold: Minimum score for a box to be considered
+    :param count_threshold: Minimum number of points in a box for it to be considered
+    :param thing_labels: Labels of thing categories
+    :param count_coeff: Power index for point count of a category before normalization
+    :param consistent_coeff: Power index for box score when calculate consistency score
+    :param point_to_box_label: override box label from point label
+    :param box_to_point_label: override point label from box label
+    :param point_to_box_scale: change box dimension or generate new box according to point label
+    '''
+    thing_labels = set(thing_labels)
+    loader = NuscenesLoader(dataset_path)
+
+    # load results
+    with open(anno_info_path, "rb") as fin:
+        annos = pickle.load(fin)
+        N = len(annos)
+        uidx_list = [item['uidx'] for item in annos]
+    with open(det_result_path, "rb") as fin:
+        dets = msgpack.unpack(fin)
+    with open(seg_result_path, "rb") as fin:
+        segs = msgpack.unpack(fin)
+
+    if index is None:
+        idlist = list(range(N))
+    elif isinstance(index, int):
+        idlist = [index]
+    elif isinstance(index, slice):
+        idlist = list(range(N)[index])
+    else:
+        raise ValueError("Unexpected index type!")
+    if debug:
+        idlist = idlist[:2]
+
+    # open output
+    packer = msgpack.Packer(use_single_float=True)
+    det_fout = open(det_result_path.replace('.msg', '.fix.msg'), 'wb')
+    det_fout.write(packer.pack_array_header(len(idlist)))
+    seg_fout = open(seg_result_path.replace('.msg', '.fix.msg'), 'wb')
+    seg_fout.write(packer.pack_array_header(len(idlist)))
+
+    # TODO: how about boxes with lower score?
+    # idea: suppress box with score lower by x (x = 0.4?)
+    for i in tqdm(idlist):
+        uidx = uidx_list[i]
+        calib = loader.calibration_data(uidx)
+        cloud = loader.lidar_data(uidx)
+        boxes = Target3DArray.deserialize(dets[i]).filter_score(score_threshold)
+        boxes = calib.transform_objects(boxes, loader.VALID_LIDAR_NAMES[0])
+        ptlabel = segs[i]['semantic_label'].copy()
+        ptscore = segs[i]['semantic_scores'].copy()
+
+        mask = boxes.crop_points(cloud)
+
+        # mark consistent box-point label
+        consistency = np.full(len(cloud), -1, dtype='i2') # can represent 32767 boxes at most
+        for j, box in enumerate(boxes):
+            imask = np.where(mask[j])[0]
+            consistent_mask = ptlabel[imask] == box.tag.labels[0]
+            consistency[imask[consistent_mask]] = j
+
+        # try to override box label using point label
+        if point_to_box_label:
+            for j, box in enumerate(boxes):
+                # excluding points correctly classified by other boxes
+                inconsistent_mask = mask[j] & ((consistency == j) | (consistency == -1))
+                if np.sum(inconsistent_mask) < count_threshold: # skip boxes with too few points
+                    continue
+                box_ptlabel = ptlabel[inconsistent_mask]
+                box_ptscore = ptscore[inconsistent_mask]
+
+                # calculate a metric
+                ulabels, ucounts = np.unique(box_ptlabel, return_counts=True)
+                thing_mask = np.array([l in thing_labels for l in ulabels])
+                if np.sum(thing_mask) == 0: # no points of things
+                    continue
+
+                s_count = ucounts ** count_coeff # score for point count
+                s_count = s_count / np.sum(s_count)
+                s_prob = [np.mean(box_ptscore[box_ptlabel == l]) for l in ulabels] # score for label probabilities
+                s_consistent = [(1 + box.tag_score**consistent_coeff) if l == box.tag.labels[0] else 1 for l in ulabels] # score for consistant label
+                s = s_count * s_prob * s_consistent # TODO: sum or multiply?
+
+                if debug:
+                    print(f"frame{i} obj{j}, original:{box.tag.labels[0]}, candidates:{ulabels}, scores:{s}")
+
+                proposed = ulabels[thing_mask][np.argmax(s[thing_mask])]
+                if proposed != box.tag.labels[0]:
+                    tqdm.write(f"Fix frame{i} object{j}: {box.tag.labels[0]} -> {proposed}")
+                    box.tag.labels[0] = proposed
+                    # TODO: increase box score if label is correct, and decrease if wrong?
+
+        # override point label from box label
+        if box_to_point_label:
+            for j, box in enumerate(boxes):
+                override_mask = mask[j].copy()
+                if np.sum(override_mask) < count_threshold: # skip boxes with too few points
+                    continue
+
+                # skip points that is close to box boundary
+                ipoints = np.where(override_mask)[0]
+                overlaps = np.any(mask[:,ipoints], axis=1)
+                for k in np.where(overlaps)[0]: # loop over overlap box
+                    if k == j:
+                        # for this box
+                        pdist = box.points_distance(cloud[override_mask])
+                    else:
+                        # for other box (also ignore points inside other boxes)
+                        pdist = -boxes[k].points_distance(cloud[override_mask])
+                    pdist_thres = max(np.min(boxes[k].dimension) * (1-boxes[k].tag_score), 0.1) # at least 0.1 m
+                    override_mask[np.where(pdist < pdist_thres)] = False
+
+                ptlabel[override_mask] = box.tag.labels[0]
+
+        # rescale or create box from point labels
+        if point_to_box_scale:
+            pass # TODO: to be implemented
+
+        det_fout.write(packer.pack(boxes.serialize()))
+        seg_fout.write(packer.pack(dict(semantic_scores=ptscore, semantic_label=ptlabel)))
+
+    det_fout.close()
+    seg_fout.close()
+    # TODO: add stats for fixed objects
+
+
+Tstat = namedtuple("Tstat", ['frame_id', 'obj_id', 'obj_label', 'total_count', 'lstats'])
+Lstat = namedtuple("Lstat", ['label', 'count', 'mean_dist', 'std_dist', 'max_dist'])
+
+def crossfix_in_dataset(phase='training'):
+    loader = NuscenesLoader("data/nuscenes_d3d", phase=phase)
+    stats = []
+
+    for i in trange(len(loader)):
+        label_box = loader.annotation_3dobject(i)
+        calib = loader.calibration_data(i)
+        points = loader.lidar_data(i)
+        label_point = loader.annotation_3dpoints(i)
+
+        label_box = calib.transform_objects(label_box, loader.VALID_LIDAR_NAMES[0])
+        for j in range(len(label_box)):
+            tag = label_box[j].tag.labels[0]
+            mask = label_box[j].crop_points(points)
+            pdist = label_box[j].points_distance(points[mask])
+            check = label_point.semantic[mask] == label_box[j].tag.labels[0]
+            if not np.all(check):
+                err_labels = label_point.semantic[mask][~check]
+                err_pdist = pdist[~check]
+                lstats = []
+                for l, count in zip(*np.unique(err_labels, return_counts=True)):
+                    ldist = err_pdist[err_labels == l]
+                    lstats.append(Lstat(l, count, np.mean(ldist), np.std(ldist), np.max(ldist)))
+                stats.append(Tstat(i, j, tag, np.sum(mask), lstats))
+
+    with open("stats.pkl", "wb") as fout:
+        pickle.dump(stats, fout)
+
+def crossfix_in_dataset_analysis(stats_path="stats.pkl", find=None, csv=False):
+    stats: Tstat
+    with open(stats_path, "rb") as fin:
+        stats = pickle.load(fin)
+
+    if find is None:
+        dist_stat = defaultdict(list)
+        ratio_stat = defaultdict(list)
+
+        for stat in stats:
+            for lstat in stat.lstats:
+                lpair = stat.obj_label, lstat.label
+                dist_stat[lpair].append((lstat.count, lstat.mean_dist, lstat.std_dist, lstat.max_dist))
+                ratio_stat[lpair].append((lstat.count, stat.total_count))
+
+        if csv:
+            print("label, err_label, err_count, total_count, err_ratio(%), dist_mean(cm), dist_stddev(cm), dist_max1, dist_max2, dist_max3, dist_max4, dist_max5")
+
+        for k, v in ratio_stat.items():
+            collect = np.sum(np.array(v), axis=0)
+            dist_arr = np.array(dist_stat[k])
+            dmean = np.average(dist_arr[:,1], weights=dist_arr[:,0])
+            dstd = np.sqrt(np.average(np.square(dist_arr[:,2]), weights=dist_arr[:,0]))
+            dmax5 = -np.partition(-dist_arr[:,3], 5)[:5] if len(dist_arr) > 5 else dist_arr[:,3]
+            if find is None:
+                if csv:
+                    dmax5 = (dmax5*100).tolist()
+                    dmax5_str = ','.join(str(i) for i in dmax5) + ','*(5-len(dmax5))
+                    print(f"{k[0]},{k[1]},{collect[0]},{collect[1]},{(collect[0] / collect[1]) * 100},{dmean*100},{dstd*100},{dmax5_str}")
+                else:
+                    print(f"{k[0]:2} -> {k[1]:2}: {collect[0]:7}/{collect[1]:<8} ({(collect[0] / collect[1]) * 100:6.2f}%), dist mean: {dmean*100:8.4f}, dist stddev: {dstd*100:8.4f}, dist max 5: {dmax5*100}")
+
+        if not csv:
+            print("(stats in cm)")
+
+    else:
+        collects = []
+        for stat in stats:
+            if find[0] != stat.obj_label:
+                continue
+            
+            for lstat in stat.lstats:
+                if find[1] != lstat.label:
+                    continue
+                collects.append((stat.frame_id, stat.obj_id, lstat.count))
+
+        # clustering by scenes
+        loader = NuscenesLoader("data/nuscenes_d3d")
+        for k, g in groupby(collects, lambda x: loader.identity(x[0])[0]):
+            carr = np.array(list(g))
+            most = np.argmax(carr[:,2])
+            frame_id, obj_id, count = carr[most]
+            print(f"frame: {frame_id:5}, obj_id: {obj_id:3}, count: {count:4}")
 
 if __name__ == "__main__":
     # TODO: use fire?
-    eval_detection()
-    eval_segmentation()
-    detseg_crossfix()
+    # eval_detection(ratio=0.3)
+    # eval_segmentation(ratio=0.3)
+    detseg_crossfix(index=slice(2000), score_threshold=0.1)
+    # crossfix_in_dataset(phase="validation")
+    # crossfix_in_dataset_analysis(csv=True)
+    # crossfix_in_dataset_analysis(find=(10, 9))

@@ -55,7 +55,12 @@ def resolve_dataset_type(ds_type) -> DetectionDatasetBase:
     else:
         raise ValueError("Dataset name not recognized!")
 
-def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool = False, ninter_frames: int = 10, with_label=None):
+def collect_ann_file(loader: DetectionDatasetBase,
+                     lidar_name: str,
+                     debug: bool = False,
+                     ninter_frames: int = 10,
+                     with_label: bool = None,
+                     fix_label: bool = True):
     if with_label is None:
         with_label = loader.phase != "testing"
     
@@ -84,12 +89,54 @@ def collect_ann_file(loader: DetectionDatasetBase, lidar_name: str, debug: bool 
 
             # parse array of objects
             objects = loader.annotation_3dobject(i)
+            if fix_label:
+                ptlabel = loader.annotation_3dpoints(i)
+                cloud = loader.lidar_data(i)
+
             if len(objects) != 0:
                 objects = calib.transform_objects(objects, lidar_name)
                 
                 # calculate number of points in the boxes
                 annos['num_lidar_pts'] = [box.aux['num_lidar_pts'] for box in objects]
                 annos['num_radar_pts'] = [box.aux['num_radar_pts'] for box in objects]
+
+                if fix_label:
+                    # some configs
+                    min_npts = 15
+                    min_ratio = 0.6
+                    def isthing(clsid):
+                        return (0 < clsid) & (clsid <= 10)
+
+                    # iterate objects
+                    ptmask = objects.crop_points(cloud)
+                    overlap_mask = np.sum(ptmask, axis=0) < 2 # ignore points in overlap region
+                    thing_mask = isthing(ptlabel.semantic) # only consider thing label
+                    for obj, objmask in zip(objects, ptmask):
+                        mask = objmask & overlap_mask & thing_mask
+                        npts = np.sum(mask)
+                        if npts == 0:
+                            continue
+
+                        obj_ptlabel, obj_ptcount = np.unique(ptlabel.semantic[mask], return_counts=True)
+                        imax = np.argmax(obj_ptcount)
+                        max_label = obj_ptlabel[imax]
+                        if max_label != obj.tag_top.value and isthing(max_label) and obj.tag_top.value != 0 and\
+                                obj_ptcount[imax] / np.sum(obj_ptcount) > min_ratio:
+
+                            if len(obj_ptcount) >= 2:
+                                if len(obj_ptcount) >= 3: print(npts, len(obj_ptcount))
+                                if npts < min_npts: # skip box with too few points if there are ambiguous thing lables
+                                    continue
+
+                                if debug:
+                                    imax2 = np.argsort(obj_ptcount)[-2]
+                                    more_ratio = obj_ptcount[imax] / obj_ptcount[imax2]
+                                    tqdm.tqdm.write("FIX: %d -> %d (%d pts, %.2fx second label)" % (obj.tag_top.value, max_label, npts, more_ratio))
+                            else:
+                                if debug:
+                                    tqdm.tqdm.write("FIX: %d -> %d (%d pts)" % (obj.tag_top.value, max_label, npts))
+
+                            obj.tag_top = max_label
 
                 # adapt box params to mmdet3d coordinate
                 box_arr = objects.to_numpy()
@@ -427,7 +474,7 @@ class D3DDataset(Custom3DDataset):
 
 def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
     trainval_split=0.8, inzip=False, lidar_name=0, debug=False, ninter_frames=10,
-    database_save_path=None, db_generate=False, db_info_save_path=None):
+    database_save_path=None, db_generate=False, db_info_save_path=None, fix_label=True):
     ds_type = resolve_dataset_type(ds_name)
     seed = int(str(random())[2:])
     if isinstance(lidar_name, int):
@@ -441,18 +488,18 @@ def d3d_data_prep(ds_name, root_path, info_prefix, out_dir=None,
     train_loader = ds_type(root_path, inzip=inzip, phase="training",
         trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     traininfo_path = info_path = Path(root_path, f'{info_prefix}_infos_train.pkl')
-    mmcv.dump(collect_ann_file(train_loader, lidar_name, ninter_frames=ninter_frames, debug=debug), info_path)
+    mmcv.dump(collect_ann_file(train_loader, lidar_name, ninter_frames=ninter_frames, debug=debug, fix_label=fix_label), info_path)
 
     # Creating info for validation set
     val_loader = ds_type(root_path, inzip=inzip, phase="validation",
         trainval_split=trainval_split, trainval_random=seed, trainval_byseq=True)
     info_path = Path(root_path, f'{info_prefix}_infos_val.pkl')
-    mmcv.dump(collect_ann_file(val_loader, lidar_name, ninter_frames=ninter_frames, debug=debug), info_path)
+    mmcv.dump(collect_ann_file(val_loader, lidar_name, ninter_frames=ninter_frames, debug=debug, fix_label=fix_label), info_path)
 
     # Creating info for test set
     test_loader = ds_type(root_path, inzip=inzip, phase="testing")
     info_path = Path(root_path, f'{info_prefix}_infos_test.pkl')
-    mmcv.dump(collect_ann_file(test_loader, lidar_name, ninter_frames=ninter_frames, debug=debug), info_path)
+    mmcv.dump(collect_ann_file(test_loader, lidar_name, ninter_frames=ninter_frames, debug=debug, fix_label=fix_label), info_path)
 
     # Creating dataset ground-truth sampler
     try:

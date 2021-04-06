@@ -33,6 +33,8 @@ def eval_detection(debug=False,
                    anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
                    result_path="work_dirs/temp/detection_results.msg",
                    dataset_path="data/nuscenes_d3d/",
+                   min_overlap=0.5,
+                   pr_sample_count=20,
                    ratio=1):
 
     with open(anno_info_path, "rb") as fin:
@@ -44,7 +46,7 @@ def eval_detection(debug=False,
     print("results loaded.")
 
     loader = NuscenesLoader(dataset_path)
-    evaluator = DetectionEvaluator(list(NuscenesDetectionClass)[1:], 0.5)
+    evaluator = DetectionEvaluator(list(NuscenesDetectionClass)[1:], min_overlap, pr_sample_count=pr_sample_count)
 
     if debug:
         mapping = map(eval_frame_det, zip(uidx_list, dets, repeat(loader), repeat(evaluator)))
@@ -144,14 +146,15 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                     point_to_box_label=True,
                     box_to_point_label=True,
                     point_to_box_scale=True,
-                    score_threshold=0.4,
+                    score_margin=0.4,
                     count_threshold=10,
                     thing_labels=list(range(1,11)),
                     count_coeff=1, consistent_coeff=1):
     '''
     Crossfix on detection and segmentation results
     :param index: If None, then all frames are converted, if int, then only specific frame will be converted
-    :param score_threshold: Minimum score for a box to be considered
+    :param score_margin: when two box overlaps, if the one box has a higher score by this margin than another,
+        then the box with lower score will be ignored when calculating
     :param count_threshold: Minimum number of points in a box for it to be considered
     :param thing_labels: Labels of thing categories
     :param count_coeff: Power index for point count of a category before normalization
@@ -191,31 +194,54 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
     seg_fout = open(seg_result_path.replace('.msg', '.fix.msg'), 'wb')
     seg_fout.write(packer.pack_array_header(len(idlist)))
 
-    # TODO: how about boxes with lower score?
-    # idea: suppress box with score lower by x (x = 0.4?)
     for i in tqdm(idlist):
         uidx = uidx_list[i]
         calib = loader.calibration_data(uidx)
         cloud = loader.lidar_data(uidx)
-        boxes = Target3DArray.deserialize(dets[i]).filter_score(score_threshold)
+        boxes = Target3DArray.deserialize(dets[i])
+        if len(boxes) == 0:
+            continue
+        if debug:
+            for j, b in enumerate(boxes): # tag each box for debugging
+                b.tid = j+1
+        boxes.sort_by_score() # score from lowest to highest
         boxes = calib.transform_objects(boxes, loader.VALID_LIDAR_NAMES[0])
         ptlabel = segs[i]['semantic_label'].copy()
         ptscore = segs[i]['semantic_scores'].copy()
 
         mask = boxes.crop_points(cloud)
 
+        # pre-caculate score jump table
+        score_lp = -1
+        score_hp = 0
+        score_map_low = [] # score_map_low[i] is the biggest index that its box score < boxes[i].score - score_margin
+                           # score_map_low[i]=-1 means no box satisfies the inequality
+        score_map_high = [] # score_map_high[i] is the smallest index that its box score > boxes[i].score + score_margin
+                            # score_map_high[i]=len(boxes) means no box satisfies the inequality
+        for box in boxes:
+            score_low = box.tag_top_score - score_margin
+            while boxes[score_lp+1].tag_top_score < score_low:
+                score_lp += 1
+            score_map_low.append(score_lp)
+
+            score_high = box.tag_top_score + score_margin
+            while score_hp < len(boxes) and boxes[score_hp].tag_top_score <= score_high:
+                score_hp += 1
+            score_map_high.append(score_hp)
+
         # mark consistent box-point label
-        consistency = np.full(len(cloud), -1, dtype='i2') # can represent 32767 boxes at most
+        consistency = np.full(len(cloud), -1, dtype='i2') # index of box that correctly contains a point,
+                                                          # can represent 32767 boxes at most
         for j, box in enumerate(boxes):
             imask = np.where(mask[j])[0]
-            consistent_mask = ptlabel[imask] == box.tag.labels[0]
+            consistent_mask = ptlabel[imask] == box.tag_top.value
             consistency[imask[consistent_mask]] = j
 
         # try to override box label using point label
         if point_to_box_label:
-            for j, box in enumerate(boxes):
-                # excluding points correctly classified by other boxes
-                inconsistent_mask = mask[j] & ((consistency == j) | (consistency == -1))
+            for j, box in reversed(list(enumerate(boxes))): # from highest score to lowest
+                # excluding points correctly classified by other boxes (with score high enough)
+                inconsistent_mask = mask[j] & ((consistency <= score_map_low[j]) | (consistency == j))
                 if np.sum(inconsistent_mask) < count_threshold: # skip boxes with too few points
                     continue
                 box_ptlabel = ptlabel[inconsistent_mask]
@@ -230,21 +256,36 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                 s_count = ucounts ** count_coeff # score for point count
                 s_count = s_count / np.sum(s_count)
                 s_prob = [np.mean(box_ptscore[box_ptlabel == l]) for l in ulabels] # score for label probabilities
-                s_consistent = [(1 + box.tag_score**consistent_coeff) if l == box.tag.labels[0] else 1 for l in ulabels] # score for consistant label
+                s_consistent = [(1 + box.tag_top_score**consistent_coeff) if l == box.tag_top.value else 1 for l in ulabels] # score for consistant label
                 s = s_count * s_prob * s_consistent # TODO: sum or multiply?
 
                 if debug:
-                    print(f"frame{i} obj{j}, original:{box.tag.labels[0]}, candidates:{ulabels}, scores:{s}")
+                    print(f"frame{i} obj{box.tid-1}({box.tag_top_score:.3f}), original:{box.tag_top.value}, candidates:{ulabels}, scores:{s}")
 
                 proposed = ulabels[thing_mask][np.argmax(s[thing_mask])]
-                if proposed != box.tag.labels[0]:
-                    tqdm.write(f"Fix frame{i} object{j}: {box.tag.labels[0]} -> {proposed}")
-                    box.tag.labels[0] = proposed
+                # TODO: do not change if there is a box with higher score and overlap with this box (with enough IoU)
+                #       or more strategically remove label of box with higher score from possible proposals (before argmax)
+                if proposed != box.tag_top.value:
+                    # update consistency matrix
+                    consistency[np.where(inconsistent_mask & (ptlabel == proposed))[0]] = j
+                    # FIXME: old incorrect labels are preserved, it's hard to fix
+
+                    # overwrite
+                    tqdm.write(f"Fix frame{i} object with score {box.tag_top_score:.3f}: {box.tag_top.value} -> {proposed}")
+                    box.tag_top = proposed
+
                     # TODO: increase box score if label is correct, and decrease if wrong?
+                    #       suppose box score is s,
+                    #           if correct then new score is 1-(1-s)*(1-a)^b
+                    #           if incorrect then new score is 1-(1-s)*(1+a)^b
+                    #       a is a parameter, b is how correct is the box (for example use s_count)
+                    #       this score update need to be applied after all proposals to prevent reordering
 
         # override point label from box label
+        # TODO: only override points with low score (lower than some threshold)
+        #       box with lower score should not overwrite the label of points with higher score
         if box_to_point_label:
-            for j, box in enumerate(boxes):
+            for j, box in enumerate(boxes): # from lower score to higher score
                 override_mask = mask[j].copy()
                 if np.sum(override_mask) < count_threshold: # skip boxes with too few points
                     continue
@@ -253,16 +294,20 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                 ipoints = np.where(override_mask)[0]
                 overlaps = np.any(mask[:,ipoints], axis=1)
                 for k in np.where(overlaps)[0]: # loop over overlap box
+                    if k <= score_map_low[j]: # ignore boxes with low score
+                        continue
+
                     if k == j:
                         # for this box
                         pdist = box.points_distance(cloud[override_mask])
                     else:
                         # for other box (also ignore points inside other boxes)
                         pdist = -boxes[k].points_distance(cloud[override_mask])
-                    pdist_thres = max(np.min(boxes[k].dimension) * (1-boxes[k].tag_score), 0.1) # at least 0.1 m
+                    # TODO: use min dimension or z dimension? use Z we can explicitly prevent ground points to be overwrite
+                    pdist_thres = max(np.min(boxes[k].dimension) * (1-boxes[k].tag_top_score), 0.1) # at least 0.1 m
                     override_mask[np.where(pdist < pdist_thres)] = False
 
-                ptlabel[override_mask] = box.tag.labels[0]
+                ptlabel[override_mask] = box.tag_top.value
 
         # rescale or create box from point labels
         if point_to_box_scale:
@@ -273,7 +318,7 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
 
     det_fout.close()
     seg_fout.close()
-    # TODO: add stats for fixed objects
+    # TODO: add stats for what has been fixed
 
 
 Tstat = namedtuple("Tstat", ['frame_id', 'obj_id', 'obj_label', 'total_count', 'lstats'])
@@ -291,10 +336,10 @@ def crossfix_in_dataset(phase='training'):
 
         label_box = calib.transform_objects(label_box, loader.VALID_LIDAR_NAMES[0])
         for j in range(len(label_box)):
-            tag = label_box[j].tag.labels[0]
+            tag = label_box[j].tag_top.value
             mask = label_box[j].crop_points(points)
             pdist = label_box[j].points_distance(points[mask])
-            check = label_point.semantic[mask] == label_box[j].tag.labels[0]
+            check = label_point.semantic[mask] == tag
             if not np.all(check):
                 err_labels = label_point.semantic[mask][~check]
                 err_pdist = pdist[~check]
@@ -363,9 +408,14 @@ def crossfix_in_dataset_analysis(stats_path="stats.pkl", find=None, csv=False):
 
 if __name__ == "__main__":
     # TODO: use fire?
-    # eval_detection(ratio=0.3)
-    # eval_segmentation(ratio=0.3)
-    detseg_crossfix(index=slice(2000), score_threshold=0.1)
+    # detseg_crossfix(index=slice(2000))
+    # detseg_crossfix(index=2764, debug=True)
+
+    # eval_detection(ratio=0.3, result_path="work_dirs/temp/detection_results.fix.msg")
+    eval_segmentation(ratio=0.3, 
+        det_result_path="work_dirs/temp/detection_results.fix.msg",
+        seg_result_path="work_dirs/temp/segmentation_results.fix.msg")
+
     # crossfix_in_dataset(phase="validation")
     # crossfix_in_dataset_analysis(csv=True)
     # crossfix_in_dataset_analysis(find=(10, 9))

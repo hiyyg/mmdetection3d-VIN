@@ -1,12 +1,14 @@
 import pickle
-from re import L
+from io import BytesIO
 import msgpack
 import msgpack_numpy
-from numpy.lib.arraysetops import isin, unique
 msgpack_numpy.patch()
 
+from zipfile import ZipFile, ZIP_DEFLATED
+from pathlib import Path
 import numpy as np
 import torch
+import json
 from collections import namedtuple, defaultdict
 from itertools import count, repeat, islice, groupby
 from multiprocessing import Pool
@@ -15,6 +17,7 @@ from d3d.benchmarks import SegmentationEvaluator, DetectionEvaluator
 from d3d.dataset.base import TrackingDatasetBase
 from d3d.dataset.nuscenes import NuscenesLoader, NuscenesDetectionClass, NuscenesSegmentationClass
 from d3d.abstraction import Target3DArray, TransformSet
+from shutil import rmtree
 
 
 def eval_frame_det(inputs):
@@ -35,7 +38,8 @@ def eval_detection(debug=False,
                    dataset_path="data/nuscenes_d3d/",
                    min_overlap=0.5,
                    pr_sample_count=20,
-                   ratio=1):
+                   ratio=1,
+                   processes=8):
 
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
@@ -48,10 +52,10 @@ def eval_detection(debug=False,
     loader = NuscenesLoader(dataset_path)
     evaluator = DetectionEvaluator(list(NuscenesDetectionClass)[1:], min_overlap, pr_sample_count=pr_sample_count)
 
-    if debug:
+    if debug or processes == 0:
         mapping = map(eval_frame_det, zip(uidx_list, dets, repeat(loader), repeat(evaluator)))
     else:
-        pool = Pool(processes=15)
+        pool = Pool(processes=processes)
         mapping = pool.imap_unordered(eval_frame_det, zip(uidx_list, dets, repeat(loader), repeat(evaluator)))
 
     for i, stats in enumerate(tqdm(islice(mapping, int(N*ratio)), total=int(N*ratio))):
@@ -87,9 +91,10 @@ def eval_segmentation(debug=False,
                       anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
                       det_result_path="work_dirs/temp/detection_results.msg",
                       seg_result_path="work_dirs/temp/segmentation_results.msg",
-                      dataset_path = "data/nuscenes_d3d",
-                      score_threshold = 0.4,
-                      ratio = 1):
+                      dataset_path="data/nuscenes_d3d",
+                      score_threshold=0.4,
+                      ratio=1,
+                      processes=8):
 
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
@@ -105,13 +110,16 @@ def eval_segmentation(debug=False,
     evaluator = SegmentationEvaluator(list(NuscenesSegmentationClass), min_points=5)
 
     # run evaluator
-    if debug:
+    if debug or processes == 0:
         mapping = map(eval_frame_seg, zip(uidx_list, dets, segs, repeat(loader), repeat(evaluator), repeat(score_threshold)))
     else:
-        mapping = Pool(processes=8).imap_unordered(eval_frame_seg, zip(uidx_list, dets, segs, repeat(loader), repeat(evaluator), repeat(score_threshold)))
+        mapping = Pool(processes=processes).imap_unordered(eval_frame_seg, zip(uidx_list, dets, segs, repeat(loader), repeat(evaluator), repeat(score_threshold)))
 
     for i, stats in tqdm(islice(enumerate(mapping), int(N*ratio)), total=int(N*ratio)):
         evaluator.add_stats(stats)
+
+        if debug and i > 10:
+            break
     print(evaluator.summary())
 
     # report category-wise results
@@ -143,25 +151,28 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                     det_result_path="work_dirs/temp/detection_results.msg",
                     seg_result_path="work_dirs/temp/segmentation_results.msg",
                     debug=False, index=None,
-                    point_to_box_label=True,
-                    box_to_point_label=True,
-                    point_to_box_scale=True,
-                    score_margin=0.4,
+                    point2box_label=True,
+                    box2point_label=True,
+                    point2box_scale=True,
+                    suppress_score_margin=0.4,
+                    box2point_score_margin=0.1,
                     count_threshold=10,
-                    thing_labels=list(range(1,11)),
+                    thing_labels=list(range(1,11)), # TODO: define this in the label enum class
                     count_coeff=1, consistent_coeff=1):
     '''
     Crossfix on detection and segmentation results
     :param index: If None, then all frames are converted, if int, then only specific frame will be converted
-    :param score_margin: when two box overlaps, if the one box has a higher score by this margin than another,
+    :param suppress_score_margin: when two box overlaps, if the one box has a higher score by this margin than another,
         then the box with lower score will be ignored when calculating
+    :param box2point_score_margin: when overwrite label of a point based on its box, only point with score lower than
+        box score subtracted by this margin will be overwritten.
     :param count_threshold: Minimum number of points in a box for it to be considered
     :param thing_labels: Labels of thing categories
     :param count_coeff: Power index for point count of a category before normalization
     :param consistent_coeff: Power index for box score when calculate consistency score
-    :param point_to_box_label: override box label from point label
-    :param box_to_point_label: override point label from box label
-    :param point_to_box_scale: change box dimension or generate new box according to point label
+    :param point2box_label: override box label from point label
+    :param box2point_label: override point label from box label
+    :param point2box_scale: change box dimension or generate new box according to point label
     '''
     thing_labels = set(thing_labels)
     loader = NuscenesLoader(dataset_path)
@@ -214,17 +225,17 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
         # pre-caculate score jump table
         score_lp = -1
         score_hp = 0
-        score_map_low = [] # score_map_low[i] is the biggest index that its box score < boxes[i].score - score_margin
+        score_map_low = [] # score_map_low[i] is the biggest index that its box score < boxes[i].score - suppress_score_margin
                            # score_map_low[i]=-1 means no box satisfies the inequality
-        score_map_high = [] # score_map_high[i] is the smallest index that its box score > boxes[i].score + score_margin
+        score_map_high = [] # score_map_high[i] is the smallest index that its box score > boxes[i].score + suppress_score_margin
                             # score_map_high[i]=len(boxes) means no box satisfies the inequality
         for box in boxes:
-            score_low = box.tag_top_score - score_margin
+            score_low = box.tag_top_score - suppress_score_margin
             while boxes[score_lp+1].tag_top_score < score_low:
                 score_lp += 1
             score_map_low.append(score_lp)
 
-            score_high = box.tag_top_score + score_margin
+            score_high = box.tag_top_score + suppress_score_margin
             while score_hp < len(boxes) and boxes[score_hp].tag_top_score <= score_high:
                 score_hp += 1
             score_map_high.append(score_hp)
@@ -238,7 +249,7 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
             consistency[imask[consistent_mask]] = j
 
         # try to override box label using point label
-        if point_to_box_label:
+        if point2box_label:
             for j, box in reversed(list(enumerate(boxes))): # from highest score to lowest
                 # excluding points correctly classified by other boxes (with score high enough)
                 inconsistent_mask = mask[j] & ((consistency <= score_map_low[j]) | (consistency == j))
@@ -257,22 +268,32 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                 s_count = s_count / np.sum(s_count)
                 s_prob = [np.mean(box_ptscore[box_ptlabel == l]) for l in ulabels] # score for label probabilities
                 s_consistent = [(1 + box.tag_top_score**consistent_coeff) if l == box.tag_top.value else 1 for l in ulabels] # score for consistant label
-                s = s_count * s_prob * s_consistent # TODO: sum or multiply?
+                s = s_count * s_prob * s_consistent # XXX: sum or multiply?
 
                 if debug:
                     print(f"frame{i} obj{box.tid-1}({box.tag_top_score:.3f}), original:{box.tag_top.value}, candidates:{ulabels}, scores:{s}")
 
                 proposed = ulabels[thing_mask][np.argmax(s[thing_mask])]
-                # TODO: do not change if there is a box with higher score and overlap with this box (with enough IoU)
-                #       or more strategically remove label of box with higher score from possible proposals (before argmax)
                 if proposed != box.tag_top.value:
-                    # update consistency matrix
-                    consistency[np.where(inconsistent_mask & (ptlabel == proposed))[0]] = j
-                    # FIXME: old incorrect labels are preserved, it's hard to fix
-
                     # overwrite
-                    tqdm.write(f"Fix frame{i} object with score {box.tag_top_score:.3f}: {box.tag_top.value} -> {proposed}")
+                    message = f"Fix object @ frame {i} with score {box.tag_top_score:.3f}: {box.tag_top.value} -> {proposed}"
+                    for k in reversed(np.where(np.any(mask[:, mask[j]], axis=1))[0]):
+                        # swap label with a box with lower score
+                        if boxes[k].tag_top.value == proposed:
+                            if box.box_iou(boxes[k]) < 0.5: # only consider overlap box with iou bigger than 0.5
+                                continue
+                            boxes[k].tag_top = box.tag_top
+                            message += " (swapped)"
+                            break
+                    tqdm.write(message)
                     box.tag_top = proposed
+
+                    # fix consistency matrix
+                    # XXX: this step is slow
+                    for k, box in enumerate(boxes):
+                        imask = np.where(mask[k])[0]
+                        consistent_mask = ptlabel[imask] == box.tag_top.value
+                        consistency[imask[consistent_mask]] = k
 
                     # TODO: increase box score if label is correct, and decrease if wrong?
                     #       suppose box score is s,
@@ -282,19 +303,23 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                     #       this score update need to be applied after all proposals to prevent reordering
 
         # override point label from box label
-        # TODO: only override points with low score (lower than some threshold)
-        #       box with lower score should not overwrite the label of points with higher score
-        if box_to_point_label:
+        if box2point_label:
             for j, box in enumerate(boxes): # from lower score to higher score
+                if box.tag_top_score < box2point_score_margin:
+                    continue
+
                 override_mask = mask[j].copy()
                 if np.sum(override_mask) < count_threshold: # skip boxes with too few points
                     continue
+
+                # skip points with score higher than some threshold
+                override_mask[ptscore > box.tag_top_score - box2point_score_margin] = False
 
                 # skip points that is close to box boundary
                 ipoints = np.where(override_mask)[0]
                 overlaps = np.any(mask[:,ipoints], axis=1)
                 for k in np.where(overlaps)[0]: # loop over overlap box
-                    if k <= score_map_low[j]: # ignore boxes with low score
+                    if k <= score_map_low[j]: # ignore overlap boxes with low score
                         continue
 
                     if k == j:
@@ -303,14 +328,14 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                     else:
                         # for other box (also ignore points inside other boxes)
                         pdist = -boxes[k].points_distance(cloud[override_mask])
-                    # TODO: use min dimension or z dimension? use Z we can explicitly prevent ground points to be overwrite
+                    # XXX: use min dimension or z dimension? use Z we can explicitly prevent ground points to be overwrite
                     pdist_thres = max(np.min(boxes[k].dimension) * (1-boxes[k].tag_top_score), 0.1) # at least 0.1 m
                     override_mask[np.where(pdist < pdist_thres)] = False
 
                 ptlabel[override_mask] = box.tag_top.value
 
         # rescale or create box from point labels
-        if point_to_box_scale:
+        if point2box_scale:
             pass # TODO: to be implemented
 
         det_fout.write(packer.pack(boxes.serialize()))
@@ -325,6 +350,9 @@ Tstat = namedtuple("Tstat", ['frame_id', 'obj_id', 'obj_label', 'total_count', '
 Lstat = namedtuple("Lstat", ['label', 'count', 'mean_dist', 'std_dist', 'max_dist'])
 
 def crossfix_in_dataset(phase='training'):
+    '''
+    Collect inspection information of dataset for cross fix between bounding box and point label
+    '''
     loader = NuscenesLoader("data/nuscenes_d3d", phase=phase)
     stats = []
 
@@ -353,6 +381,9 @@ def crossfix_in_dataset(phase='training'):
         pickle.dump(stats, fout)
 
 def crossfix_in_dataset_analysis(stats_path="stats.pkl", find=None, csv=False):
+    '''
+    Analysis and report info for cross fix between bounding box and point label
+    '''
     stats: Tstat
     with open(stats_path, "rb") as fin:
         stats = pickle.load(fin)
@@ -406,15 +437,178 @@ def crossfix_in_dataset_analysis(stats_path="stats.pkl", find=None, csv=False):
             frame_id, obj_id, count = carr[most]
             print(f"frame: {frame_id:5}, obj_id: {obj_id:3}, count: {count:4}")
 
+def dump_visualization(anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
+                det_result_path="work_dirs/temp/detection_results.msg",
+                seg_result_path="work_dirs/temp/segmentation_results.msg",
+                dataset_path="data/nuscenes_d3d/",
+                phase="training",
+                output_path="visual.zip"):
+
+    loader = NuscenesLoader(dataset_path, phase=phase)
+
+    # load results
+    with open(anno_info_path, "rb") as fin:
+        annos = pickle.load(fin)
+        N = len(annos)
+        uidx_list = [item['uidx'] for item in annos]
+    if det_result_path is not None:
+        with open(det_result_path, "rb") as fin:
+            dets = msgpack.unpack(fin)
+            assert len(dets) == N
+    else:
+        dets = None
+    if seg_result_path is not None:
+        with open(seg_result_path, "rb") as fin:
+            segs = msgpack.unpack(fin)
+            assert len(segs) == N
+    else:
+        segs = None
+
+    archive = ZipFile(Path(output_path), "w", compression=ZIP_DEFLATED)
+    archive.writestr("idlist.json", json.dumps(uidx_list, default=int)) # frame_idx could be numpy int
+
+    for i in trange(N):
+        uidx = uidx_list[i]
+        cloud = loader.lidar_data(uidx)[:, :4]
+        visdata = dict(cloud=cloud, uidx=uidx)
+
+        if dets is not None:
+            calib = loader.calibration_data(uidx)
+            visdata['anno_dt'] = calib.transform_objects(Target3DArray.deserialize(dets[i]), loader.VALID_LIDAR_NAMES[0])
+            if loader.phase != "testing":
+                visdata['anno_gt'] = calib.transform_objects(loader.annotation_3dobject(uidx), loader.VALID_LIDAR_NAMES[0])
+        if segs is not None:
+            visdata['semantic_dt'] = segs[i]['semantic_label']
+            visdata['semantic_scores'] = segs[i]['semantic_scores']
+            if loader.phase != "testing":
+                visdata['semantic_gt'] = loader.annotation_3dpoints(uidx)['semantic']
+            visdata['semantic_colormap'] = [l.color for l in loader.VALID_PTS_CLASSES]
+
+        buffer = BytesIO()
+        pickle.dump(visdata, buffer)
+        archive.writestr("%06d.pkl" % i, buffer.getvalue())
+
+    archive.close()
+
+def _dump_det(items):
+    i, uidx, det, loader, path = items
+    loader.dump_detection_output(uidx, Target3DArray.deserialize(det), Path(path, "%06d.dump" % i))
+
+def dump_submission(
+    anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
+    det_result_path="work_dirs/temp/detection_results.msg",
+    seg_result_path="work_dirs/temp/segmentation_results.msg",
+    dataset_path="data/nuscenes_d3d/",
+    output_prefix="work_dirs/temp",
+    processes=8):
+
+    loader = NuscenesLoader(dataset_path)
+
+    # load results
+    with open(anno_info_path, "rb") as fin:
+        annos = pickle.load(fin)
+        N = len(annos)
+        uidx_list = [item['uidx'] for item in annos]
+    if det_result_path is not None:
+        with open(det_result_path, "rb") as fin:
+            dets = msgpack.unpack(fin)
+    else:
+        dets = None
+    if seg_result_path is not None:
+        with open(seg_result_path, "rb") as fin:
+            segs = msgpack.unpack(fin)
+    else:
+        segs = None
+        
+    sdet_path = Path(output_prefix, "submission_detection")
+    sseg_path = Path(output_prefix, "submission_segmentation")
+    if sdet_path.exists():
+        rmtree(sdet_path)
+    sdet_path.mkdir(parents=True)
+    if sseg_path.exists():
+        rmtree(sseg_path)
+    sseg_path.mkdir()
+
+    if processes == 0:
+        mapping = map(_dump_det, zip(count(), uidx_list, dets, repeat(loader), repeat(sdet_path)))
+    else:
+        mapping = Pool(processes=processes).imap_unordered(_dump_det, zip(count(), uidx_list, dets, repeat(loader), repeat(sdet_path)))
+    for r in tqdm(mapping, total=N):
+        assert r is None
+
+    if segs is not None:
+        for i in trange(len(dets)):
+            loader.dump_segmentation_output(uidx_list[i], segs[i]['semantic_label'], sseg_path, raw2seg=False)
+
+def eval_official(
+    dump_prefix="work_dirs/temp",
+    dataset_path="data/nuscenes/",
+    eval_set="val"
+):
+    '''
+    dataset_path: We need dataset in official format to perform this evaluation
+    '''
+    from d3d.dataset.nuscenes.loader import create_submission, execute_official_evaluator
+    # validate detection
+    create_submission(
+        Path(dump_prefix, "submission_detection"),
+        Path(dump_prefix, "submission_detection.json")
+    )
+    if eval_set != 'test':
+        execute_official_evaluator(
+            dataset_path,
+            Path(dump_prefix, "submission_detection.json"),
+            Path(dump_prefix, "submission_detection_results")
+        )
+
+    # validate segmentation
+    create_submission(
+        Path(dump_prefix, "submission_segmentation"),
+        Path(dump_prefix, "submission_segmentation.zip"),
+        task="lidarseg",
+        eval_set=eval_set,
+    )
+    if eval_set != 'test':
+        execute_official_evaluator(
+            dataset_path,
+            Path(dump_prefix, "submission_segmentation.zip"),
+            Path(dump_prefix, "submission_segmentation_results"),
+            task="lidarseg"
+        )
+
 if __name__ == "__main__":
+    import fire
+
+    fire.Fire({
+        "crossfix": detseg_crossfix,
+        "visualize": dump_visualization,
+        "submit": dump_submission,
+        "eval_det": eval_detection,
+        "eval_seg": eval_segmentation,
+        "eval_official": eval_official,
+    })
+
     # TODO: use fire?
+    # detseg_crossfix(
+    #     det_result_path="work_dirs/temp/detection_results-lovasz.msg",
+    #     seg_result_path="work_dirs/temp/segmentation_results-lovasz.msg",
+    # )
     # detseg_crossfix(index=slice(2000))
     # detseg_crossfix(index=2764, debug=True)
 
+    # dump_visualization(
+    #     det_result_path="work_dirs/temp/detection_results.fix.msg",
+    #     seg_result_path="work_dirs/temp/segmentation_results.fix.msg",
+    #     output_path="work_dirs/temp/visual_fix.zip")
+
+    # eval_detection(ratio=1, result_path="work_dirs/temp/detection_results.msg", processes=4)
+    # eval_segmentation(ratio=1, 
+    #     det_result_path="work_dirs/temp/detection_results.msg",
+    #     seg_result_path="work_dirs/temp/segmentation_results.msg", processes=4)
     # eval_detection(ratio=0.3, result_path="work_dirs/temp/detection_results.fix.msg")
-    eval_segmentation(ratio=0.3, 
-        det_result_path="work_dirs/temp/detection_results.fix.msg",
-        seg_result_path="work_dirs/temp/segmentation_results.fix.msg")
+    # eval_segmentation(ratio=0.2, 
+    #     det_result_path="work_dirs/temp/detection_results.fix.msg",
+    #     seg_result_path="work_dirs/temp/segmentation_results.fix.msg")
 
     # crossfix_in_dataset(phase="validation")
     # crossfix_in_dataset_analysis(csv=True)

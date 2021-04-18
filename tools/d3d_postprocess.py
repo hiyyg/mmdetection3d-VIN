@@ -351,7 +351,8 @@ Lstat = namedtuple("Lstat", ['label', 'count', 'mean_dist', 'std_dist', 'max_dis
 
 def crossfix_in_dataset(phase='training'):
     '''
-    Collect inspection information of dataset for cross fix between bounding box and point label
+    Collect inspection information of dataset for cross fix between bounding box and point label。
+    Will generate results into stats.pkl
     '''
     loader = NuscenesLoader("data/nuscenes_d3d", phase=phase)
     stats = []
@@ -383,6 +384,8 @@ def crossfix_in_dataset(phase='training'):
 def crossfix_in_dataset_analysis(stats_path="stats.pkl", find=None, csv=False):
     '''
     Analysis and report info for cross fix between bounding box and point label
+    :param find: find mismatch with specific categories, format is (obj label, point label)
+    :param csv: whether print output in csv format
     '''
     stats: Tstat
     with open(stats_path, "rb") as fin:
@@ -442,7 +445,7 @@ def dump_visualization(anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.
                 seg_result_path="work_dirs/temp/segmentation_results.msg",
                 dataset_path="data/nuscenes_d3d/",
                 phase="training",
-                output_path="visual.zip"):
+                output_path="work_dirs/temp/visual.zip"):
 
     loader = NuscenesLoader(dataset_path, phase=phase)
 
@@ -500,8 +503,10 @@ def dump_submission(
     seg_result_path="work_dirs/temp/segmentation_results.msg",
     dataset_path="data/nuscenes_d3d/",
     output_prefix="work_dirs/temp",
+    eval_set="val",
     processes=8):
 
+    from d3d.dataset.nuscenes.loader import create_submission
     loader = NuscenesLoader(dataset_path)
 
     # load results
@@ -529,46 +534,46 @@ def dump_submission(
         rmtree(sseg_path)
     sseg_path.mkdir()
 
-    if processes == 0:
-        mapping = map(_dump_det, zip(count(), uidx_list, dets, repeat(loader), repeat(sdet_path)))
-    else:
-        mapping = Pool(processes=processes).imap_unordered(_dump_det, zip(count(), uidx_list, dets, repeat(loader), repeat(sdet_path)))
-    for r in tqdm(mapping, total=N):
-        assert r is None
+    if dets is not None:
+        if processes == 0:
+            mapping = map(_dump_det, zip(count(), uidx_list, dets, repeat(loader), repeat(sdet_path)))
+        else:
+            mapping = Pool(processes=processes).imap_unordered(_dump_det, zip(count(), uidx_list, dets, repeat(loader), repeat(sdet_path)))
+        for r in tqdm(mapping, total=N):
+            assert r is None
+
+        create_submission(sdet_path, Path(output_prefix, "submission_detection.json"))
 
     if segs is not None:
         for i in trange(len(dets)):
             loader.dump_segmentation_output(uidx_list[i], segs[i]['semantic_label'], sseg_path, raw2seg=False)
 
+        create_submission(
+            sseg_path,
+            Path(output_prefix, "submission_segmentation.zip"),
+            task="lidarseg",
+            eval_set=eval_set,
+        )
+
 def eval_official(
     dump_prefix="work_dirs/temp",
     dataset_path="data/nuscenes/",
-    eval_set="val"
+    eval_det=True,
+    eval_seg=True,
 ):
     '''
     dataset_path: We need dataset in official format to perform this evaluation
     '''
     from d3d.dataset.nuscenes.loader import create_submission, execute_official_evaluator
-    # validate detection
-    create_submission(
-        Path(dump_prefix, "submission_detection"),
-        Path(dump_prefix, "submission_detection.json")
-    )
-    if eval_set != 'test':
+
+    if eval_det:
         execute_official_evaluator(
             dataset_path,
             Path(dump_prefix, "submission_detection.json"),
             Path(dump_prefix, "submission_detection_results")
         )
 
-    # validate segmentation
-    create_submission(
-        Path(dump_prefix, "submission_segmentation"),
-        Path(dump_prefix, "submission_segmentation.zip"),
-        task="lidarseg",
-        eval_set=eval_set,
-    )
-    if eval_set != 'test':
+    if eval_seg:
         execute_official_evaluator(
             dataset_path,
             Path(dump_prefix, "submission_segmentation.zip"),
@@ -587,29 +592,3 @@ if __name__ == "__main__":
         "eval_seg": eval_segmentation,
         "eval_official": eval_official,
     })
-
-    # TODO: use fire?
-    # detseg_crossfix(
-    #     det_result_path="work_dirs/temp/detection_results-lovasz.msg",
-    #     seg_result_path="work_dirs/temp/segmentation_results-lovasz.msg",
-    # )
-    # detseg_crossfix(index=slice(2000))
-    # detseg_crossfix(index=2764, debug=True)
-
-    # dump_visualization(
-    #     det_result_path="work_dirs/temp/detection_results.fix.msg",
-    #     seg_result_path="work_dirs/temp/segmentation_results.fix.msg",
-    #     output_path="work_dirs/temp/visual_fix.zip")
-
-    # eval_detection(ratio=1, result_path="work_dirs/temp/detection_results.msg", processes=4)
-    # eval_segmentation(ratio=1, 
-    #     det_result_path="work_dirs/temp/detection_results.msg",
-    #     seg_result_path="work_dirs/temp/segmentation_results.msg", processes=4)
-    # eval_detection(ratio=0.3, result_path="work_dirs/temp/detection_results.fix.msg")
-    # eval_segmentation(ratio=0.2, 
-    #     det_result_path="work_dirs/temp/detection_results.fix.msg",
-    #     seg_result_path="work_dirs/temp/segmentation_results.fix.msg")
-
-    # crossfix_in_dataset(phase="validation")
-    # crossfix_in_dataset_analysis(csv=True)
-    # crossfix_in_dataset_analysis(find=(10, 9))

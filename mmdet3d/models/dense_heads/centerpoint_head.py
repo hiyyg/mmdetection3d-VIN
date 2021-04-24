@@ -31,7 +31,7 @@ class SemanticHead(nn.Module):
         _, norm_layer = build_norm_layer(norm_cfg, mlp_channels[0])
         mlps = [
             nn.Linear(in_feat_channels + in_pts_channels, mlp_channels[0], bias=False),
-            norm_layer,
+            # norm_layer,
             nn.ReLU(inplace=True)
         ]
 
@@ -39,7 +39,7 @@ class SemanticHead(nn.Module):
             _, norm_layer = build_norm_layer(norm_cfg, mlp_channels[i+1])
             mlps.extend([
                 nn.Linear(mlp_channels[i], mlp_channels[i+1], bias=False),
-                norm_layer,
+                # norm_layer,
                 nn.ReLU(inplace=True)]
             )
 
@@ -67,18 +67,33 @@ class SemanticHead(nn.Module):
             x_range = self.point_cloud_range[3] - self.point_cloud_range[0]
             y_range = self.point_cloud_range[4] - self.point_cloud_range[1]
             z_range = self.point_cloud_range[5] - self.point_cloud_range[2]
-            x_coord = (pc[:, 0] - self.point_cloud_range[0]) * W // x_range
-            y_coord = (pc[:, 1] - self.point_cloud_range[1]) * H // y_range
-            z_coord = (pc[:, 2] - self.point_cloud_range[2]) * D // z_range
-            x_coord = x_coord.clamp(min=0, max=W-1) # use nearest feature for out of range points
-            y_coord = y_coord.clamp(min=0, max=H-1)
-            z_coord = z_coord.clamp(min=0, max=D-1)
-            selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()]
+            x_middle = (self.point_cloud_range[3] + self.point_cloud_range[0])/2
+            y_middle = (self.point_cloud_range[4] + self.point_cloud_range[1])/2
+            z_middle = (self.point_cloud_range[5] + self.point_cloud_range[2])/2
+            ox = (pc[:, 0] - self.point_cloud_range[0])
+            oy = (pc[:, 1] - self.point_cloud_range[1])
+            oz = (pc[:, 2] - self.point_cloud_range[2])
+            res_x = x_range / W
+            res_y = y_range / H
+            res_z = z_range / D
+            # x_coord = ox / res_x
+            # y_coord = oy / res_y
+            # z_coord = oz / res_z
+            x_coord = (pc[:,[0]] - x_middle) / x_range * 2
+            y_coord = (pc[:,[1]] - y_middle) / y_range * 2
+            z_coord = (pc[:,[2]] - z_middle) / z_range * 2
+            # x_coord = x_coord.clamp(min=0, max=W-1) # use nearest feature for out of range points
+            # y_coord = y_coord.clamp(min=0, max=H-1)
+            # z_coord = z_coord.clamp(min=0, max=D-1)
+            # selected_feat = pts_feature[batch, :, y_coord.long(), x_coord.long()]
+            grid = torch.cat([x_coord, y_coord], dim=1).unsqueeze(0).unsqueeze(0) # NxDxHxWx3,N=1,D=1,H=1,W=npts,
+            selected_feat = nn.functional.grid_sample(
+                pts_feature[[batch],:,:,:], grid, padding_mode="border", align_corners=False).squeeze()
 
             # concatenate feature map
-            pc[:, 0] -= x_coord / W * x_range
-            pc[:, 1] -= y_coord / H * y_range
-            pc[:, 2] -= z_coord / D * z_range
+            pc[:, 0] = ox % res_x
+            pc[:, 1] = oy % res_y
+            pc[:, 2] = oz % res_z
             concat_feats.append(torch.cat([pc, selected_feat.t()], dim=1))
 
         feat = torch.cat(concat_feats)

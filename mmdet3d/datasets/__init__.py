@@ -13,7 +13,12 @@ from .pipelines import (BackgroundPointsFilter, GlobalRotScaleTrans,
 from .scannet_dataset import ScanNetDataset
 from .sunrgbd_dataset import SUNRGBDDataset
 from .waymo_dataset import WaymoDataset
-from .d3d_wrappers import D3DDataset
+
+try:
+    import d3d
+    from .d3d_wrappers import D3DDataset
+except ImportError:
+    pass
 
 __all__ = [
     'KittiDataset', 'GroupSampler', 'DistributedGroupSampler',

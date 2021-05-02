@@ -1,5 +1,6 @@
 import mmcv
 import torch
+import numpy as np
 from copy import deepcopy
 from mmcv.parallel import collate, scatter
 from mmcv.runner import load_checkpoint
@@ -7,9 +8,9 @@ from os import path as osp
 
 from mmdet3d.core import Box3DMode, show_result
 from mmdet3d.core.bbox import get_box_type
+from mmdet3d.core.points import LiDARPoints
 from mmdet3d.datasets.pipelines import Compose
 from mmdet3d.models import build_detector
-
 
 def init_detector(config, checkpoint=None, device='cuda:0'):
     """Initialize a detector from config file.
@@ -84,6 +85,52 @@ def inference_detector(model, pcd):
         result = model(return_loss=False, rescale=True, **data)
     return result, data
 
+
+def inference_detector_online(model, points):
+    """Inference point cloud with the detector.
+
+    Args:
+        model (nn.Module): The loaded detector.
+        points (numpy.ndarray): Point cloud array.
+
+    Returns:
+        tuple: Predicted results and data from pipeline.
+    """
+
+    cfg = model.cfg
+
+    # build the data pipeline
+    test_pipeline = deepcopy([m for m in cfg.data.test.pipeline if 'Load' not in m['type']])
+    test_pipeline = Compose(test_pipeline)
+
+    box_type_3d, box_mode_3d = get_box_type(cfg.data.test.box_type_3d)
+    mmpoints = LiDARPoints(points, points_dim=points.shape[-1], attribute_dims=None)
+    data = dict(
+        points=mmpoints,
+        box_type_3d=box_type_3d,
+        box_mode_3d=box_mode_3d,
+        img_fields=[],
+        bbox3d_fields=[],
+        pts_mask_fields=[],
+        pts_seg_fields=[],
+        bbox_fields=[],
+        mask_fields=[],
+        seg_fields=[],
+        pts_of_interest_revidx = np.arange(len(points)),
+        pts_of_interest_idx = np.arange(len(points)),
+        pts_of_interest_count = len(points),
+    )
+    data = test_pipeline(data)
+    data = collate([data], samples_per_gpu=1)
+
+    # scatter to specified GPU
+    device = next(model.parameters()).device  # model device
+    data = scatter(data, [device.index])[0]
+
+    # forward the model
+    with torch.no_grad():
+        results = model(return_loss=False, rescale=True, **data)
+    return results[0]
 
 def show_result_meshlab(data, result, out_dir):
     """Show result by meshlab.

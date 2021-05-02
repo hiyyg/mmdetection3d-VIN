@@ -174,8 +174,11 @@ class D3DDataset(Custom3DDataset):
                  filter_ignore=True, # skip boxes with classid = 0
                  test_mode=False,
 
+                 box_type_3d='LiDAR', # not used, for inference only
                  lidar_name=0,
                  camera_name=0):
+
+        assert box_type_3d == 'LiDAR'
 
         # create loader
         ds_type = resolve_dataset_type(ds_type)

@@ -1,5 +1,6 @@
 import pickle
 from io import BytesIO
+from termcolor import colored
 import msgpack
 import msgpack_numpy
 msgpack_numpy.patch()
@@ -39,7 +40,8 @@ def eval_detection(debug=False,
                    min_overlap=0.5,
                    pr_sample_count=20,
                    ratio=1,
-                   processes=8):
+                   processes=8,
+                   dump_stats=None):
 
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
@@ -64,6 +66,10 @@ def eval_detection(debug=False,
             break
 
     print(evaluator.summary())
+
+    if dump_stats is not None:
+        with open(dump_stats, "wb") as fout:
+            pickle.dump(evaluator, fout)
 
 def eval_frame_seg(inputs):
     uidx, pred_boxes, pred_labels, loader, evaluator, score_threshold = inputs
@@ -94,7 +100,8 @@ def eval_segmentation(debug=False,
                       dataset_path="data/nuscenes_d3d",
                       score_threshold=0.4,
                       ratio=1,
-                      processes=8):
+                      processes=8,
+                      dump_stats=None):
 
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
@@ -146,6 +153,10 @@ def eval_segmentation(debug=False,
     mpq = sum(mpq) / len(mpq)
     print("Replaced PQ=%.3f" % mpq)
 
+    if dump_stats is not None:
+        with open(dump_stats, "wb") as fout:
+            pickle.dump(evaluator, fout)
+
 def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
                     anno_info_path="data/nuscenes_d3d/d3d_nuscenes_infos_val.pkl",
                     det_result_path="work_dirs/temp/detection_results.msg",
@@ -177,6 +188,9 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
     thing_labels = set(thing_labels)
     loader = NuscenesLoader(dataset_path)
 
+    if debug:
+        evaluator = DetectionEvaluator(list(NuscenesDetectionClass)[1:], 0.5, pr_sample_count=20)
+
     # load results
     with open(anno_info_path, "rb") as fin:
         annos = pickle.load(fin)
@@ -193,10 +207,15 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
         idlist = [index]
     elif isinstance(index, slice):
         idlist = list(range(N)[index])
+    elif isinstance(index, float):
+        idlist = list(range(int(N*index)))
     else:
         raise ValueError("Unexpected index type!")
     if debug:
-        idlist = idlist[:2]
+        if isinstance(debug, bool):
+            idlist = idlist[:2]
+        else:
+            idlist = idlist[:debug]
 
     # open output
     packer = msgpack.Packer(use_single_float=True)
@@ -222,11 +241,18 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
 
         mask = boxes.crop_points(cloud)
 
+        # get stats
+        if debug:
+            gt_boxes = loader.annotation_3dobject(uidx)
+            evaluator.add_stats(evaluator.calc_stats(gt_boxes, boxes, calib))
+            ap_before = evaluator.ap()
+            evaluator.reset()
+
         # pre-caculate score jump table
         score_lp = -1
         score_hp = 0
         score_map_low = [] # score_map_low[i] is the biggest index that its box score < boxes[i].score - suppress_score_margin
-                           # score_map_low[i]=-1 means no box satisfies the inequality
+                        # score_map_low[i]=-1 means no box satisfies the inequality
         score_map_high = [] # score_map_high[i] is the smallest index that its box score > boxes[i].score + suppress_score_margin
                             # score_map_high[i]=len(boxes) means no box satisfies the inequality
         for box in boxes:
@@ -266,20 +292,21 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
 
                 s_count = ucounts ** count_coeff # score for point count
                 s_count = s_count / np.sum(s_count)
-                s_prob = [np.mean(box_ptscore[box_ptlabel == l]) for l in ulabels] # score for label probabilities
+                s_prob = np.asarray([np.mean(box_ptscore[box_ptlabel == l]) for l in ulabels]) # score for label probabilities
                 s_consistent = [(1 + box.tag_top_score**consistent_coeff) if l == box.tag_top.value else 1 for l in ulabels] # score for consistant label
                 s = s_count * s_prob * s_consistent # XXX: sum or multiply?
 
                 if debug:
-                    print(f"frame{i} obj{box.tid-1}({box.tag_top_score:.3f}), original:{box.tag_top.value}, candidates:{ulabels}, scores:{s}")
+                    tqdm.write(colored(f"frame{i} obj{box.tid-1}({box.tag_top_score:.3f}), original:{box.tag_top.value}, candidates:{ulabels[thing_mask]}, scores: count {ucounts[thing_mask]} prob {s_prob[thing_mask]} total {s[thing_mask]}", "blue"))
 
-                proposed = ulabels[thing_mask][np.argmax(s[thing_mask])]
-                if proposed != box.tag_top.value:
+                iselect = np.argmax(s[thing_mask])
+                proposed = ulabels[thing_mask][iselect]
+                if proposed != box.tag_top.value and ucounts[thing_mask][iselect] > count_threshold:
                     # overwrite
                     message = f"Fix object @ frame {i} with score {box.tag_top_score:.3f}: {box.tag_top.value} -> {proposed}"
                     for k in reversed(np.where(np.any(mask[:, mask[j]], axis=1))[0]):
                         # swap label with a box with lower score
-                        if boxes[k].tag_top.value == proposed:
+                        if boxes[k].tag_top.value == proposed and boxes[k].tag_top_score < box.tag_top_score:
                             if box.box_iou(boxes[k]) < 0.5: # only consider overlap box with iou bigger than 0.5
                                 continue
                             boxes[k].tag_top = box.tag_top
@@ -340,6 +367,18 @@ def detseg_crossfix(dataset_path="data/nuscenes_d3d/",
 
         det_fout.write(packer.pack(boxes.serialize()))
         seg_fout.write(packer.pack(dict(semantic_scores=ptscore, semantic_label=ptlabel)))
+
+        # compare
+        if debug:
+            evaluator.add_stats(evaluator.calc_stats(gt_boxes, boxes, calib))
+            ap_after = evaluator.ap()
+            evaluator.reset()
+
+            for k, v in ap_after.items():
+                if v - ap_before[k] > 0:
+                    tqdm.write(colored("Performance on %s: %+.4f" % (k.name, v - ap_before[k]), "green"))
+                elif v - ap_before[k] < 0:
+                    tqdm.write(colored("Performance on %s: %+.4f" % (k.name, v - ap_before[k]), "red"))
 
     det_fout.close()
     seg_fout.close()

@@ -474,10 +474,25 @@ class GlobalRotScaleTrans(object):
 
 @PIPELINES.register_module()
 class PointShuffle(object):
-    """Shuffle input points."""
-    def __init__(self, sample_rate=1.0, dynamic_rate=True):
+    """Shuffle input points.
+    
+    Args:
+        sample_rate (float): How many points will be selected for training
+        dynamic_rate (bool): If true, the actual sample rate will be dynamic between 1 and sample_rate
+        semantic_only (bool): If true, the sampling will be only applied to semantic labels
+        class_balance (bool): If true, the downsampling will be proportional to each semantic class (given semantic label)
+
+    """
+    def __init__(self,
+                 sample_rate=1.0,
+                 dynamic_rate=True,
+                 semantic_only=False,
+                 class_balance=False
+        ):
         self.sample_rate = sample_rate
         self.dynamic_rate = dynamic_rate
+        self.semantic_only = semantic_only
+        self.class_balance = class_balance
 
     def __call__(self, input_dict):
         """Call function to shuffle points.
@@ -496,9 +511,14 @@ class PointShuffle(object):
             sample_rate = np.random.rand() * (1-self.sample_rate) + self.sample_rate
         else:
             sample_rate = self.sample_rate
+
         sample_size = int(npoints * sample_rate)
-        perm = torch.randperm(npoints, device=points.tensor.device)
-        points.tensor = points.tensor[perm[:sample_size]]
+        if self.class_balance:
+            raise NotImplementedError() # generate permutation by class here
+        else:
+            perm = torch.randperm(npoints, device=points.tensor.device)
+            if not self.semantic_only:
+                points.tensor = points.tensor[perm[:sample_size]]
 
         # filter index of point of interest
         poi_index = input_dict['pts_of_interest_idx']
@@ -508,10 +528,16 @@ class PointShuffle(object):
 
         # remove discard indices
         if self.sample_rate != 1:
-            points_mask = np.zeros(npoints, dtype=bool)
-            points_mask[:sample_size] = True
-            masked_idx, idx_mask = mask_index(points_mask, poi_index_shuffled)
-            input_dict['pts_of_interest_idx'] = masked_idx
+            if self.semantic_only:
+                nsemantics = len(input_dict['pts_semantic_mask'])
+                nsemantics = int(nsemantics * sample_rate)
+                input_dict['pts_of_interest_idx'] = poi_index_shuffled[:nsemantics]
+                idx_mask = np.arange(nsemantics)
+            else:
+                points_mask = np.zeros(npoints, dtype=bool)
+                points_mask[:sample_size] = True
+                masked_idx, idx_mask = mask_index(points_mask, poi_index_shuffled)
+                input_dict['pts_of_interest_idx'] = masked_idx
 
             if 'pts_of_interest_revidx' in input_dict:
                 poi_revidx = input_dict['pts_of_interest_revidx']
@@ -599,6 +625,10 @@ class PointsRangeFilter(object):
         """
         points = input_dict['points']
         points_mask = points.in_range_3d(self.pcd_range)
+        if 'pts_for_detection_idx' in input_dict:
+            det_mask = np.full(len(points), False, dtype=bool)
+            det_mask[input_dict['pts_for_detection_idx']] = True
+            points_mask = points_mask & det_mask
         input_dict['points'] = points[points_mask]
         if self.preserve_for_semantic:
             input_dict['out_of_range_points'] = points[~points_mask] # labels of discarded points are stored at the end of point of interest arrays

@@ -489,7 +489,7 @@ class PointShuffle(object):
                  semantic_only=False,
                  class_balance=False
         ):
-        self.sample_rate = sample_rate
+        self.sample_rate = min(sample_rate, 1.0)
         self.dynamic_rate = dynamic_rate
         self.semantic_only = semantic_only
         self.class_balance = class_balance
@@ -517,7 +517,9 @@ class PointShuffle(object):
             raise NotImplementedError() # generate permutation by class here
         else:
             perm = torch.randperm(npoints, device=points.tensor.device)
-            if not self.semantic_only:
+            if self.semantic_only:
+                points.tensor = points.tensor[perm]
+            else:
                 points.tensor = points.tensor[perm[:sample_size]]
 
         # filter index of point of interest

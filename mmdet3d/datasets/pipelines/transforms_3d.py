@@ -473,6 +473,43 @@ class GlobalRotScaleTrans(object):
 
 
 @PIPELINES.register_module()
+class SampleSemantics(object):
+    '''
+    Reduce number of semantic label provided. If seed is set, the sampling
+        will be deterministic.
+    '''
+    def __init__(self,
+                 sample_rate=1.0,
+                 class_balance=False,
+                 sample_seed=12345,
+                 ):
+        self.sample_rate = min(sample_rate, 1.0)
+        self.class_balance = class_balance
+        self.sample_seed = sample_seed
+
+    def __call__(self, input_dict):
+        if self.sample_rate >= 1:
+            return input_dict
+
+        nsemantics = len(input_dict['pts_semantic_mask'])
+        seed = self.sample_seed * nsemantics
+        sample_size = int(nsemantics * self.sample_rate)
+
+        idx_mask = np.random.RandomState(seed).choice(nsemantics, sample_size, replace=False)
+        input_dict['pts_of_interest_idx'] = input_dict['pts_of_interest_idx'][idx_mask]
+
+        if 'pts_of_interest_revidx' in input_dict:
+            poi_revidx = input_dict['pts_of_interest_revidx']
+            input_dict['pts_of_interest_revidx'] = poi_revidx[idx_mask]
+
+        if 'pts_semantic_mask' in input_dict:
+            semantic_points = input_dict['pts_semantic_mask']
+            input_dict['pts_semantic_mask'] = semantic_points[idx_mask]
+
+        return input_dict
+
+
+@PIPELINES.register_module()
 class PointShuffle(object):
     """Shuffle input points.
     
@@ -486,13 +523,9 @@ class PointShuffle(object):
     def __init__(self,
                  sample_rate=1.0,
                  dynamic_rate=True,
-                 semantic_only=False,
-                 class_balance=False
         ):
         self.sample_rate = min(sample_rate, 1.0)
         self.dynamic_rate = dynamic_rate
-        self.semantic_only = semantic_only
-        self.class_balance = class_balance
 
     def __call__(self, input_dict):
         """Call function to shuffle points.
@@ -513,14 +546,8 @@ class PointShuffle(object):
             sample_rate = self.sample_rate
 
         sample_size = int(npoints * sample_rate)
-        if self.class_balance:
-            raise NotImplementedError() # generate permutation by class here
-        else:
-            perm = torch.randperm(npoints, device=points.tensor.device)
-            if self.semantic_only:
-                points.tensor = points.tensor[perm]
-            else:
-                points.tensor = points.tensor[perm[:sample_size]]
+        perm = torch.randperm(npoints, device=points.tensor.device)
+        points.tensor = points.tensor[perm[:sample_size]]
 
         # filter index of point of interest
         poi_index = input_dict['pts_of_interest_idx']
@@ -530,16 +557,10 @@ class PointShuffle(object):
 
         # remove discard indices
         if self.sample_rate != 1:
-            if self.semantic_only:
-                nsemantics = len(input_dict['pts_semantic_mask'])
-                nsemantics = int(nsemantics * sample_rate)
-                input_dict['pts_of_interest_idx'] = poi_index_shuffled[:nsemantics]
-                idx_mask = np.arange(nsemantics)
-            else:
-                points_mask = np.zeros(npoints, dtype=bool)
-                points_mask[:sample_size] = True
-                masked_idx, idx_mask = mask_index(points_mask, poi_index_shuffled)
-                input_dict['pts_of_interest_idx'] = masked_idx
+            points_mask = np.zeros(npoints, dtype=bool)
+            points_mask[:sample_size] = True
+            masked_idx, idx_mask = mask_index(points_mask, poi_index_shuffled)
+            input_dict['pts_of_interest_idx'] = masked_idx
 
             if 'pts_of_interest_revidx' in input_dict:
                 poi_revidx = input_dict['pts_of_interest_revidx']

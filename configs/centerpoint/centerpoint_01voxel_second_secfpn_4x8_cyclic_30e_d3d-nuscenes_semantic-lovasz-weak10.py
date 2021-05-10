@@ -82,6 +82,8 @@ train_pipeline = [
         valid_cat_ids=seg_mapping,
         remove_invalid=False,
         as_mapping=True),
+    dict(type="SampleSemantics",
+        sample_rate=0.1),
     dict(
         type='GlobalRotScaleTrans',
         rot_range=[-0.3925, 0.3925],
@@ -91,7 +93,7 @@ train_pipeline = [
         type='RandomFlip3D',
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
-    dict(type='PointShuffle', sample_rate=0.1, semantic_only=True),
+    dict(type='PointShuffle', sample_rate=0.9),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range, preserve_for_semantic=True),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),

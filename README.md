@@ -2,19 +2,23 @@
   <img src="resources/mmdet3d-logo.png" width="600"/>
 </div>
 
-[![docs](https://img.shields.io/badge/docs-latest-blue)](https://mmdetection3d.readthedocs.io/en/latest/)
-[![badge](https://github.com/open-mmlab/mmdetection3d/workflows/build/badge.svg)](https://github.com/open-mmlab/mmdetection3d/actions)
-[![codecov](https://codecov.io/gh/open-mmlab/mmdetection3d/branch/master/graph/badge.svg)](https://codecov.io/gh/open-mmlab/mmdetection3d)
-[![license](https://img.shields.io/github/license/open-mmlab/mmdetection3d.svg)](https://github.com/open-mmlab/mmdetection3d/blob/master/LICENSE)
+## Instructions for VIN
 
+This branch contains the implementation of the "VIN: Voxel-based Implicit Network for Joint 3D Object Detection and Segmentation for Lidars". To train the VIN model, please follow the instructions from the original MMDetection3D repository and use the `configs/centerpoint/centerpoint_01voxel_second_secfpn_4x8_cyclic_30e_d3d-nuscenes_semantic-lovasz.py` config file. Please pre-organize the nuScenes dataset following the instruction of [D3D package](https://github.com/cmpute/d3d)
 
-**News**: We released the codebase v0.8.0.
+```python
+# prepare data into mmdetection3d format and put the data under data/nuscenes directory
+python mmdet3d/datasets/d3d_wrappers.py
 
-Documentation: https://mmdetection3d.readthedocs.io/
+# train the model
+python train configs/centerpoint/centerpoint_01voxel_second_secfpn_4x8_cyclic_30e_d3d-nuscenes_semantic-lovasz.py
+```
+
+<hr/>
 
 ## Introduction
 
-The master branch works with **PyTorch 1.3 to 1.6**.
+The master branchw orks with **PyTorch 1.3 to 1.6**.
 
 MMDetection3D is an open source object detection toolbox based on PyTorch, towards the next-generation platform for general 3D detection. It is
 a part of the OpenMMLab project developed by [MMLab](http://mmlab.ie.cuhk.edu.hk/).
